@@ -11,6 +11,7 @@ jobs:
   release-images:
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       packages: write
       id-token: write
     outputs:
@@ -160,6 +161,7 @@ jobs:
   generate-kyverno-provenance:
     needs: release-images
     permissions:
+      contents: read
       id-token: write   # To sign the provenance.
       packages: write   # To upload assets to release.
       actions: read     # To read the workflow path.
@@ -175,6 +177,7 @@ jobs:
   generate-kyverno-init-provenance:
     needs: release-images
     permissions:
+      contents: read
       id-token: write   # To sign the provenance.
       packages: write   # To upload assets to release.
       actions: read     # To read the workflow path.
@@ -190,6 +193,7 @@ jobs:
   generate-background-controller-provenance:
     needs: release-images
     permissions:
+      contents: read
       id-token: write   # To sign the provenance.
       packages: write   # To upload assets to release.
       actions: read     # To read the workflow path.
@@ -205,6 +209,7 @@ jobs:
   generate-cleanup-controller-provenance:
     needs: release-images
     permissions:
+      contents: read
       id-token: write   # To sign the provenance.
       packages: write   # To upload assets to release.
       actions: read     # To read the workflow path.
@@ -220,6 +225,7 @@ jobs:
   generate-kyverno-cli-provenance:
     needs: release-images
     permissions:
+      contents: read
       id-token: write   # To sign the provenance.
       packages: write   # To upload assets to release.
       actions: read     # To read the workflow path.
@@ -235,6 +241,7 @@ jobs:
   generate-reports-controller-provenance:
     needs: release-images
     permissions:
+      contents: read
       id-token: write   # To sign the provenance.
       packages: write   # To upload assets to release.
       actions: read     # To read the workflow path.
