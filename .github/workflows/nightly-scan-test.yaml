@@ -34,18 +34,11 @@ jobs:
       - name: Set Image name
         run: |
           echo IMAGE_NAME="nirmata/nightly-kyverno-${{ matrix.branch }}" >> $GITHUB_ENV
-      
-      - name: Log into registry ${{env.REGISTRY}}
-        uses: docker/login-action@0d4c9c5ea7693da7b068278f7b52bda2a190a446 # v3.2.0
-        with:
-          registry: ${{env.REGISTRY}}
-          username: ${{github.actor}}
-          password: ${{secrets.GITHUB_TOKEN}}
-
+          
 
       - name: Build and Push 
         run: |
-          make ko-build-kyverno KO_DOCKER_REPO=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          make ko-publish-kyverno KYVERNO_IMAGE=${{ IMAGE_NAME }}
 
 
       - name: image scanning
