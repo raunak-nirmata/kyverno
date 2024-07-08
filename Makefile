@@ -286,7 +286,7 @@ build-all: build-readiness-checker
 ##############
 
 LOCAL_PLATFORM      := linux/$(GOARCH)
-KO_REGISTRY         := ko.local
+KO_REGISTRY         ?= ko.local
 ifndef VERSION
 KO_TAGS             := $(GIT_SHA)
 else ifeq ($(VERSION),main)
