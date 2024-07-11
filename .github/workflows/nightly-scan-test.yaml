@@ -33,13 +33,13 @@ jobs:
 
       - name: Set Image name
         run: |
-          echo IMAGE_NAME="nirmata/nightly-kyverno-${{ matrix.branch }}" >> $GITHUB_ENV
+          echo IMAGE_NAME="nightly-kyverno-${{ matrix.branch }}" >> $GITHUB_ENV
           
       - name: Build and Push 
         env:
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          make ko-publish-kyverno KYVERNO_IMAGE=${{ env.IMAGE_NAME }} REGISTRY_USERNAME=${{ github.actor }}
+          make ko-publish-kyverno REPO=nirmata KYVERNO_IMAGE=${{ env.IMAGE_NAME }} REGISTRY_USERNAME=${{ github.actor }}
       - name: image scanning
         id: scan
         uses: nirmata/reusable-workflows/.github/actions/image-scanning@main
@@ -47,5 +47,5 @@ jobs:
           pcc_url: ${{ secrets.PCC_URL }}
           pcc_user: ${{ secrets.PCC_USER }}
           pcc_pass: ${{ secrets.PCC_PASS }}
-          image_name: ${{env.REGISTRY}}/${{env.IMAGE_NAME}}
+          image_name: ${{env.REGISTRY}}/nirmata/${{env.IMAGE_NAME}}
           free-disk: 'true'
