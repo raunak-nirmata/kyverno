@@ -7,6 +7,24 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  configure:
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest 
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout to repository
+        uses: actions/checkout@v3
+        
+      - name: Get config file 
+        run: |
+          curl -H "Authorization: token ${{ secrets.DEPLOYMENT_PAT }}" -o ./config.json -s https://raw.githubusercontent.com/nirmata/reusable-workflows/main/tags/enterprise_kyverno_config.json
+          cat ./config.json
+      - name: Set matrix variable
+        id: set-matrix
+        run: |
+          echo "::set-output name=matrix::$(jq -c . < ./config.json)"
+  
   publish-scan-branch:
     name: Publish
     runs-on: ubuntu-latest
@@ -15,45 +33,16 @@ jobs:
       packages: write
     strategy:
       fail-fast: false
-      matrix:
-        branch:
-          - release-1.12-n4k
+      matrix:  ${{ fromJson(needs.configure.outputs.matrix) }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
-        with:
-          ref: ${{ matrix.branch }}
-
-      - name: Setup Go
-        uses: actions/setup-go@cdcb36043654635271a94b9a6d1392de5bb323a7 # v5.0.1
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-
-      - name: Set Image name
-        run: |
-          echo IMAGE_NAME="nightly-kyverno-${{ matrix.branch }}" >> $GITHUB_ENV
-          
-      - name: Build and Push 
-        env:
-          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          make ko-publish-kyverno REPO=nirmata KYVERNO_IMAGE=${{ env.IMAGE_NAME }} REGISTRY_USERNAME=${{ github.actor }} KO_TAGS=latest
-
-      - name: Log into registry ${{env.REGISTRY}}
-        uses: docker/login-action@v1
-        with:
-          registry: ${{env.REGISTRY}}
-          username: ${{github.actor}}
-          password: ${{secrets.GITHUB_TOKEN}}
-
-      - name: image scanning
+      - name: Nightly scanning
         id: scan
-        uses: nirmata/reusable-workflows/.github/actions/image-scanning@main
+        uses: nirmata/reusable-workflows/.github/actions/nightly-scanning@main
         with:
+          ref: ${{ matrix.ek-ref }}
+          repo: ${{ github.repository }}
+          github_password: ${{ secrets.GITHUB_TOKEN }}
           pcc_url: ${{ secrets.PCC_URL }}
           pcc_user: ${{ secrets.PCC_USER }}
-          pcc_pass: ${{ secrets.PCC_PASS }}
-          image_name: ${{env.REGISTRY}}/nirmata/${{env.IMAGE_NAME}}:latest
-          free-disk: 'true'
+          pcc_pass: ${{ secrets.PCC_PASS }}     
