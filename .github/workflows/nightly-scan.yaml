@@ -1,5 +1,7 @@
 name: Nightly Scan
 on:
+  workflow_dispatch:
+    inputs:
   schedule:
     - cron: "0 8 * * *" # UTC
 
