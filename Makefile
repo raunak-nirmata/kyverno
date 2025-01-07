@@ -6,8 +6,9 @@
 
 GIT_SHA              := $(shell git rev-parse HEAD)
 REGISTRY             ?= ghcr.io
-REPO                 ?= kyverno
-KIND_IMAGE           ?= kindest/node:v1.35.1
+REPO                 ?= nirmata
+KIND_IMAGE           ?= kindest/node:v1.35.0
+GOEXPERIMENT         ?=""
 KIND_NAME            ?= kind
 KIND_CONFIG          ?= default
 GOOS                 ?= $(shell go env GOOS)
@@ -21,6 +22,14 @@ CLEANUP_IMAGE        := cleanup-controller
 REPORTS_IMAGE        := reports-controller
 BACKGROUND_IMAGE     := background-controller
 READINESS_IMAGE      := readiness-checker
+
+KYVERNOPRE_IMAGE_FIPS     := kyvernopre-fips
+KYVERNO_IMAGE_FIPS        := kyverno-fips
+CLI_IMAGE_FIPS            := kyverno-cli-fips
+CLEANUP_IMAGE_FIPS        := cleanup-controller-fips
+REPORTS_IMAGE_FIPS        := reports-controller-fips
+BACKGROUND_IMAGE_FIPS     := background-controller-fips
+
 REPO_KYVERNOPRE      := $(REGISTRY)/$(REPO)/$(KYVERNOPRE_IMAGE)
 REPO_KYVERNO         := $(REGISTRY)/$(REPO)/$(KYVERNO_IMAGE)
 REPO_CLI             := $(REGISTRY)/$(REPO)/$(CLI_IMAGE)
@@ -28,6 +37,14 @@ REPO_CLEANUP         := $(REGISTRY)/$(REPO)/$(CLEANUP_IMAGE)
 REPO_REPORTS         := $(REGISTRY)/$(REPO)/$(REPORTS_IMAGE)
 REPO_BACKGROUND      := $(REGISTRY)/$(REPO)/$(BACKGROUND_IMAGE)
 REPO_READINESS       := $(REGISTRY)/$(REPO)/$(READINESS_IMAGE)
+
+REPO_KYVERNOPRE_FIPS      := $(REGISTRY)/$(REPO)/$(KYVERNOPRE_IMAGE_FIPS)
+REPO_KYVERNO_FIPS         := $(REGISTRY)/$(REPO)/$(KYVERNO_IMAGE_FIPS)
+REPO_CLI_FIPS             := $(REGISTRY)/$(REPO)/$(CLI_IMAGE_FIPS)
+REPO_CLEANUP_FIPS         := $(REGISTRY)/$(REPO)/$(CLEANUP_IMAGE_FIPS)
+REPO_REPORTS_FIPS         := $(REGISTRY)/$(REPO)/$(REPORTS_IMAGE_FIPS)
+REPO_BACKGROUND_FIPS      := $(REGISTRY)/$(REPO)/$(BACKGROUND_IMAGE_FIPS)
+
 USE_CONFIG           ?= standard
 INSTALL_VERSION	     ?= 3.2.6
 
@@ -71,6 +88,20 @@ else
 SED                                := sed
 endif
 COMMA                              := ,
+
+
+##################################
+# FIPS VARIABLES
+##################################
+FIPS_ENABLED := 0 # Default to FIPS disabled
+
+ifeq ($(FIPS_ENABLED), 1)
+IMAGE_TAG    := $(shell git describe --tags --abbrev=0)
+BUILD_TAGS   :="fips" 
+GOEXPERIMENT :="systemcrypto" 
+LD_FLAGS     :="-s -w"
+CGO_ENABLED  := 1
+endif
 
 $(KIND):
 	@echo Install kind... >&2
@@ -280,6 +311,332 @@ build-all: build-kyverno
 build-all: build-kyverno-init
 build-all: build-reports-controller
 build-all: build-readiness-checker
+
+
+##################################
+# KYVERNO FIPS CONTAINER
+##################################
+
+.PHONY: docker-build-and-push-kyverno-fips
+docker-buildx-builder:
+	if ! docker buildx ls | grep -q kyverno-fips; then \
+		docker buildx create --name kyverno-fips --use; \
+	else \
+		docker buildx use kyverno-fips; \
+	fi
+
+kyverno-fips: fmt vet
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=$(CGO_ENABLED) go build ./$(KYVERNO_DIR) -o $(PWD)/$(KYVERNO_DIR)/$(KYVERNO_IMAGE_FIPS) -tags "$(BUILD_TAGS)" -ldflags="$(LD_FLAGS)" $(PWD)/$(KYVERNO_PATH)
+
+docker-publish-kyverno-fips: docker-buildx-builder docker-build-and-push-kyverno-fips
+
+docker-build-and-push-kyverno-fips: docker-buildx-builder
+	@docker buildx build --file $(PWD)/Dockerfile.fips \
+		--progress plain \
+		--platform linux/amd64,linux/arm64 \
+		--tag $(REPO_KYVERNO_FIPS):$(IMAGE_TAG) \
+		. \
+		--build-arg BUILD_TAGS=$(BUILD_TAGS) \
+		--build-arg GOEXPERIMENT=$(GOEXPERIMENT) \
+		--build-arg LD_FLAGS=$(LD_FLAGS) \
+		--build-arg MAIN_FILE=./$(KYVERNO_DIR) \
+		--build-arg OUTPUT=kyverno \
+		--push
+
+docker-get-kyverno-digest:
+	@docker buildx imagetools inspect --raw $(REPO_KYVERNO_FIPS):$(IMAGE_TAG) | perl -pe 'chomp if eof' | openssl dgst -sha256 | sed 's/^.* //'
+
+##################################
+# KYVERNOPRE/INIT CONTAINER
+##################################
+initContainer: fmt vet
+	GOOS=$(GOOS) go build -o $(PWD)/$(KYVERNOPRE_DIR)/kyvernopre -ldflags=$(LD_FLAGS) $(PWD)/$(KYVERNOPRE_DIR)
+
+.PHONY: docker-build-and-push-initContainer-fips 
+docker-publish-initContainer-fips: docker-buildx-builder docker-build-and-push-initContainer-fips 
+
+docker-build-and-push-initContainer-fips: docker-buildx-builder
+	@docker buildx build --file $(PWD)/Dockerfile.fips \
+		--progress plain \
+		--platform linux/amd64,linux/arm64 \
+		--tag $(REPO_KYVERNOPRE_FIPS):$(IMAGE_TAG) \
+		. \
+		--build-arg BUILD_TAGS=$(BUILD_TAGS) \
+		--build-arg GOEXPERIMENT=$(GOEXPERIMENT) \
+		--build-arg LD_FLAGS=$(LD_FLAGS) \
+		--build-arg MAIN_FILE=./$(KYVERNOPRE_DIR) \
+		--build-arg OUTPUT=kyvernopre \
+		--push
+
+docker-get-initContainer-digest:
+	@docker buildx imagetools inspect --raw $(REPO_KYVERNOPRE_FIPS):$(IMAGE_TAG) | perl -pe 'chomp if eof' | openssl dgst -sha256 | sed 's/^.* //'
+
+##################################
+# KYVERNO-CLI FIPS CONTAINER
+##################################
+cli:
+	GOOS=$(GOOS) go build -o $(PWD)/$(CLI_DIR)/kubectl-kyverno -ldflags=$(LD_FLAGS) $(PWD)/$(CLI_DIR)
+
+.PHONY: docker-build-and-push-cli-fips
+docker-publish-cli-fips: docker-buildx-builder docker-build-and-push-cli-fips
+
+docker-build-and-push-cli-fips: docker-buildx-builder
+	@docker buildx build --file $(PWD)/Dockerfile.fips \
+		--progress plain \
+		--platform linux/amd64,linux/arm64 \
+		--tag $(REPO_CLI_FIPS):$(IMAGE_TAG) \
+		. \
+		--build-arg BUILD_TAGS=$(BUILD_TAGS) \
+		--build-arg GOEXPERIMENT=$(GOEXPERIMENT) \
+		--build-arg LD_FLAGS=$(LD_FLAGS) \
+		--build-arg MAIN_FILE=./$(CLI_DIR) \
+		--build-arg OUTPUT=kubectl-kyverno \
+		--push
+
+docker-get-cli-digest:
+	@docker buildx imagetools inspect --raw $(REPO_CLI_FIPS):$(IMAGE_TAG) | perl -pe 'chomp if eof' | openssl dgst -sha256 | sed 's/^.* //'
+
+##################################
+# CLEANUP FIPS CONTAINER
+##################################
+
+cleanup:
+	GOOS=$(GOOS) go build -o $(PWD)/$(CLEANUP_DIR)/cleanup-controller -ldflags=$(LD_FLAGS) $(PWD)/$(CLEANUP_DIR)
+
+.PHONY: docker-build-and-push-cleanup-fips
+docker-publish-cleanup-fips: docker-buildx-builder docker-build-and-push-cleanup-fips
+
+docker-build-and-push-cleanup-fips: docker-buildx-builder
+	@docker buildx build --file $(PWD)/Dockerfile.fips \
+		--progress plain \
+		--platform linux/amd64,linux/arm64 \
+		--tag $(REPO_CLEANUP_FIPS):$(IMAGE_TAG) \
+		. \
+		--build-arg BUILD_TAGS=$(BUILD_TAGS) \
+		--build-arg GOEXPERIMENT=$(GOEXPERIMENT) \
+		--build-arg LD_FLAGS=$(LD_FLAGS) \
+		--build-arg MAIN_FILE=./$(CLEANUP_DIR) \
+		--build-arg OUTPUT=cleanup-controller \
+		--push
+
+docker-get-cleanup-digest:
+	@docker buildx imagetools inspect --raw $(REPO_CLEANUP_FIPS):$(IMAGE_TAG) | perl -pe 'chomp if eof' | openssl dgst -sha256 | sed 's/^.* //'
+
+##################################
+# BACKGROUND FIPS CONTAINER
+##################################
+
+background:
+	GOOS=$(GOOS) go build -o $(PWD)/$(BACKGROUND_DIR)/background-controller -ldflags=$(LD_FLAGS) $(PWD)/$(BACKGROUND_DIR)
+
+.PHONY: docker-build-and-push-background-fips
+docker-publish-background-fips: docker-buildx-builder docker-build-and-push-background-fips
+
+docker-build-and-push-background-fips: docker-buildx-builder
+	@docker buildx build --file $(PWD)/Dockerfile.fips \
+		--progress plain \
+		--platform linux/amd64,linux/arm64 \
+		--tag $(REPO_BACKGROUND_FIPS):$(IMAGE_TAG) \
+		. \
+		--build-arg BUILD_TAGS=$(BUILD_TAGS) \
+		--build-arg GOEXPERIMENT=$(GOEXPERIMENT) \
+		--build-arg LD_FLAGS=$(LD_FLAGS) \
+		--build-arg MAIN_FILE=./$(BACKGROUND_DIR) \
+		--build-arg OUTPUT=background-controller \
+		--push
+
+docker-get-background-digest:
+	@docker buildx imagetools inspect --raw $(REPO_BACKGROUND_FIPS):$(IMAGE_TAG) | perl -pe 'chomp if eof' | openssl dgst -sha256 | sed 's/^.* //'
+
+##################################
+# REPORTS FIPS CONTAINER
+##################################
+OUTPUT    := kyvernopre
+
+reports:
+	GOOS=$(GOOS) go build -o $(PWD)/$(REPORTS_DIR)/kyverno -ldflags=$(LD_FLAGS) $(PWD)/$(REPORTS_DIR)
+
+.PHONY: docker-build-and-push-reports-fips
+docker-publish-reports-fips: docker-buildx-builder docker-build-and-push-reports-fips
+
+docker-build-and-push-reports-fips: docker-buildx-builder
+	@docker buildx build --file $(PWD)/Dockerfile.fips \
+		--progress plain \
+		--platform linux/amd64,linux/arm64 \
+		--tag $(REPO_REPORTS_FIPS):$(IMAGE_TAG) \
+		. \
+		--build-arg BUILD_TAGS=$(BUILD_TAGS) \
+		--build-arg GOEXPERIMENT=$(GOEXPERIMENT) \
+		--build-arg LD_FLAGS=$(LD_FLAGS) \
+		--build-arg MAIN_FILE=./$(REPORTS_DIR) \
+		--build-arg OUTPUT=reports-controller \
+		--push
+
+docker-get-reports-digest:
+	@docker buildx imagetools inspect --raw $(REPO_REPORTS_FIPS):$(IMAGE_TAG) | perl -pe 'chomp if eof' | openssl dgst -sha256 | sed 's/^.* //'
+
+
+##################################
+# KYVERNO FIPS CONTAINER
+##################################
+
+.PHONY: docker-build-and-push-kyverno-fips
+docker-buildx-builder:
+	if ! docker buildx ls | grep -q kyverno-fips; then \
+		docker buildx create --name kyverno-fips --use; \
+	else \
+		docker buildx use kyverno-fips; \
+	fi
+
+kyverno-fips: fmt vet
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=$(CGO_ENABLED) go build ./$(KYVERNO_DIR) -o $(PWD)/$(KYVERNO_DIR)/$(KYVERNO_IMAGE_FIPS) -tags "$(BUILD_TAGS)" -ldflags="$(LD_FLAGS)" $(PWD)/$(KYVERNO_PATH)
+
+docker-publish-kyverno-fips: docker-buildx-builder docker-build-and-push-kyverno-fips
+
+docker-build-and-push-kyverno-fips: docker-buildx-builder
+	@docker buildx build --file $(PWD)/Dockerfile.fips \
+		--progress plain \
+		--platform linux/amd64,linux/arm64 \
+		--tag $(REPO_KYVERNO_FIPS):$(IMAGE_TAG) \
+		. \
+		--build-arg BUILD_TAGS=$(BUILD_TAGS) \
+		--build-arg GOEXPERIMENT=$(GOEXPERIMENT) \
+		--build-arg LD_FLAGS=$(LD_FLAGS) \
+		--build-arg MAIN_FILE=./$(KYVERNO_DIR) \
+		--build-arg OUTPUT=kyverno \
+		--push
+
+docker-get-kyverno-digest:
+	@docker buildx imagetools inspect --raw $(REPO_KYVERNO_FIPS):$(IMAGE_TAG) | perl -pe 'chomp if eof' | openssl dgst -sha256 | sed 's/^.* //'
+
+##################################
+# KYVERNOPRE/INIT CONTAINER
+##################################
+initContainer: fmt vet
+	GOOS=$(GOOS) go build -o $(PWD)/$(KYVERNOPRE_DIR)/kyvernopre -ldflags=$(LD_FLAGS) $(PWD)/$(KYVERNOPRE_DIR)
+
+.PHONY: docker-build-and-push-initContainer-fips 
+docker-publish-initContainer-fips: docker-buildx-builder docker-build-and-push-initContainer-fips 
+
+docker-build-and-push-initContainer-fips: docker-buildx-builder
+	@docker buildx build --file $(PWD)/Dockerfile.fips \
+		--progress plain \
+		--platform linux/amd64,linux/arm64 \
+		--tag $(REPO_KYVERNOPRE_FIPS):$(IMAGE_TAG) \
+		. \
+		--build-arg BUILD_TAGS=$(BUILD_TAGS) \
+		--build-arg GOEXPERIMENT=$(GOEXPERIMENT) \
+		--build-arg LD_FLAGS=$(LD_FLAGS) \
+		--build-arg MAIN_FILE=./$(KYVERNOPRE_DIR) \
+		--build-arg OUTPUT=kyvernopre \
+		--push
+
+docker-get-initContainer-digest:
+	@docker buildx imagetools inspect --raw $(REPO_KYVERNOPRE_FIPS):$(IMAGE_TAG) | perl -pe 'chomp if eof' | openssl dgst -sha256 | sed 's/^.* //'
+
+##################################
+# KYVERNO-CLI FIPS CONTAINER
+##################################
+cli:
+	GOOS=$(GOOS) go build -o $(PWD)/$(CLI_DIR)/kubectl-kyverno -ldflags=$(LD_FLAGS) $(PWD)/$(CLI_DIR)
+
+.PHONY: docker-build-and-push-cli-fips
+docker-publish-cli-fips: docker-buildx-builder docker-build-and-push-cli-fips
+
+docker-build-and-push-cli-fips: docker-buildx-builder
+	@docker buildx build --file $(PWD)/Dockerfile.fips \
+		--progress plain \
+		--platform linux/amd64,linux/arm64 \
+		--tag $(REPO_CLI_FIPS):$(IMAGE_TAG) \
+		. \
+		--build-arg BUILD_TAGS=$(BUILD_TAGS) \
+		--build-arg GOEXPERIMENT=$(GOEXPERIMENT) \
+		--build-arg LD_FLAGS=$(LD_FLAGS) \
+		--build-arg MAIN_FILE=./$(CLI_DIR) \
+		--build-arg OUTPUT=kubectl-kyverno \
+		--push
+
+docker-get-cli-digest:
+	@docker buildx imagetools inspect --raw $(REPO_CLI_FIPS):$(IMAGE_TAG) | perl -pe 'chomp if eof' | openssl dgst -sha256 | sed 's/^.* //'
+
+##################################
+# CLEANUP FIPS CONTAINER
+##################################
+
+cleanup:
+	GOOS=$(GOOS) go build -o $(PWD)/$(CLEANUP_DIR)/cleanup-controller -ldflags=$(LD_FLAGS) $(PWD)/$(CLEANUP_DIR)
+
+.PHONY: docker-build-and-push-cleanup-fips
+docker-publish-cleanup-fips: docker-buildx-builder docker-build-and-push-cleanup-fips
+
+docker-build-and-push-cleanup-fips: docker-buildx-builder
+	@docker buildx build --file $(PWD)/Dockerfile.fips \
+		--progress plain \
+		--platform linux/amd64,linux/arm64 \
+		--tag $(REPO_CLEANUP_FIPS):$(IMAGE_TAG) \
+		. \
+		--build-arg BUILD_TAGS=$(BUILD_TAGS) \
+		--build-arg GOEXPERIMENT=$(GOEXPERIMENT) \
+		--build-arg LD_FLAGS=$(LD_FLAGS) \
+		--build-arg MAIN_FILE=./$(CLEANUP_DIR) \
+		--build-arg OUTPUT=cleanup-controller \
+		--push
+
+docker-get-cleanup-digest:
+	@docker buildx imagetools inspect --raw $(REPO_CLEANUP_FIPS):$(IMAGE_TAG) | perl -pe 'chomp if eof' | openssl dgst -sha256 | sed 's/^.* //'
+
+##################################
+# BACKGROUND FIPS CONTAINER
+##################################
+
+background:
+	GOOS=$(GOOS) go build -o $(PWD)/$(BACKGROUND_DIR)/background-controller -ldflags=$(LD_FLAGS) $(PWD)/$(BACKGROUND_DIR)
+
+.PHONY: docker-build-and-push-background-fips
+docker-publish-background-fips: docker-buildx-builder docker-build-and-push-background-fips
+
+docker-build-and-push-background-fips: docker-buildx-builder
+	@docker buildx build --file $(PWD)/Dockerfile.fips \
+		--progress plain \
+		--platform linux/amd64,linux/arm64 \
+		--tag $(REPO_BACKGROUND_FIPS):$(IMAGE_TAG) \
+		. \
+		--build-arg BUILD_TAGS=$(BUILD_TAGS) \
+		--build-arg GOEXPERIMENT=$(GOEXPERIMENT) \
+		--build-arg LD_FLAGS=$(LD_FLAGS) \
+		--build-arg MAIN_FILE=./$(BACKGROUND_DIR) \
+		--build-arg OUTPUT=background-controller \
+		--push
+
+docker-get-background-digest:
+	@docker buildx imagetools inspect --raw $(REPO_BACKGROUND_FIPS):$(IMAGE_TAG) | perl -pe 'chomp if eof' | openssl dgst -sha256 | sed 's/^.* //'
+
+##################################
+# REPORTS FIPS CONTAINER
+##################################
+OUTPUT    := kyvernopre
+
+reports:
+	GOOS=$(GOOS) go build -o $(PWD)/$(REPORTS_DIR)/kyverno -ldflags=$(LD_FLAGS) $(PWD)/$(REPORTS_DIR)
+
+.PHONY: docker-build-and-push-reports-fips
+docker-publish-reports-fips: docker-buildx-builder docker-build-and-push-reports-fips
+
+docker-build-and-push-reports-fips: docker-buildx-builder
+	@docker buildx build --file $(PWD)/Dockerfile.fips \
+		--progress plain \
+		--platform linux/amd64,linux/arm64 \
+		--tag $(REPO_REPORTS_FIPS):$(IMAGE_TAG) \
+		. \
+		--build-arg BUILD_TAGS=$(BUILD_TAGS) \
+		--build-arg GOEXPERIMENT=$(GOEXPERIMENT) \
+		--build-arg LD_FLAGS=$(LD_FLAGS) \
+		--build-arg MAIN_FILE=./$(REPORTS_DIR) \
+		--build-arg OUTPUT=reports-controller \
+		--push
+
+docker-get-reports-digest:
+	@docker buildx imagetools inspect --raw $(REPO_REPORTS_FIPS):$(IMAGE_TAG) | perl -pe 'chomp if eof' | openssl dgst -sha256 | sed 's/^.* //'
 
 ##############
 # BUILD (KO) #
