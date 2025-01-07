@@ -5,9 +5,99 @@ name: releaser
 on:
   push:
     tags:
-      - v*
+    - v*
 
 jobs:
+  release-kyverno:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/reuse.yaml
+    with:
+      publish_command: docker-publish-kyverno-fips
+      digest_command: docker-get-kyverno-digest
+      image_name: kyverno-fips
+      tag: release
+      main: cmd/kyverno
+    secrets:
+      registry_username: ${{ github.actor }}
+      registry_password: ${{ secrets.CR_PAT }}
+  release-init-container-fips:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/reuse.yaml
+    with:
+      publish_command: docker-publish-initContainer-fips
+      digest_command: docker-get-initContainer-digest
+      image_name: kyvernopre-fips
+      tag: release
+      main: cmd/kyverno-init
+    secrets:
+      registry_username: ${{ github.actor }}
+      registry_password: ${{ secrets.CR_PAT }}
+  release-kyverno-cli-fips:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/reuse.yaml
+    with:
+      publish_command: docker-publish-cli-fips
+      digest_command: docker-get-cli-digest
+      image_name: kyverno-cli-fips
+      tag: release
+      main: cmd/cli/kubectl-kyverno
+    secrets:
+      registry_username: ${{ github.actor }}
+      registry_password: ${{ secrets.CR_PAT }}
+  release-cleanup-controller-fips:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/reuse.yaml
+    with:
+      publish_command: docker-publish-cleanup-fips
+      digest_command: docker-get-cleanup-digest
+      image_name: cleanup-controller-fips
+      tag: release
+      main: cmd/cleanup-controller
+    secrets:
+      registry_username: ${{ github.actor }}
+      registry_password: ${{ secrets.CR_PAT }}
+  release-background-controller-fips:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/reuse.yaml
+    with:
+      publish_command: docker-publish-background-fips
+      digest_command: docker-get-background-digest
+      image_name: background-controller-fips
+      tag: release
+      main: cmd/background-controller
+    secrets:
+      registry_username: ${{ github.actor }}
+      registry_password: ${{ secrets.CR_PAT }}
+  release-reports-controller-fips:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/reuse.yaml
+    with:
+      publish_command: docker-publish-reports-fips
+      digest_command: docker-get-reports-digest
+      image_name: reports-controller-fips
+      tag: release
+      main: cmd/reports-controller
+    secrets:
+      registry_username: ${{ github.actor }}
+      registry_password: ${{ secrets.CR_PAT }}
   release-images:
     runs-on: ubuntu-latest
     permissions:
