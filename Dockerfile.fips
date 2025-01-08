@@ -43,4 +43,4 @@ COPY --from=builder /etc/ssl/certs /etc/ssl/certs
 
 USER 1001
 
-ENTRYPOINT ["/${OUTPUT}"]
+ENTRYPOINT [/${OUTPUT}]
