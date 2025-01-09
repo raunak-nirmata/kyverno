@@ -19,7 +19,7 @@ ARG BUILD_TAGS
 ARG GOEXPERIMENT
 ARG LD_FLAGS
 ARG MAIN_FILE
-ARG OUTPUT="kyvernopre"
+ARG OUTPUT=background-controller
 
 ARG TARGETARCH
 RUN GOOS=linux GOARCH=$TARGETARCH \
@@ -43,4 +43,4 @@ COPY --from=builder /etc/ssl/certs /etc/ssl/certs
 
 USER 1001
 
-ENTRYPOINT [/${OUTPUT}]
+ENTRYPOINT ["/background-controller"]
