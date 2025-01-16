@@ -1118,7 +1118,7 @@ kind-install-kyverno: helm-setup-dependency-charts ## Install kyverno helm chart
 kind-install-kyverno-from-repo: $(HELM) ## Install Kyverno Helm Chart from the Kyverno repo
 	@echo Install kyverno chart... >&2
 	@$(HELM) upgrade --install kyverno --namespace kyverno --create-namespace --wait \
-		--repo https://kyverno.github.io/kyverno/ kyverno \
+		--repo https://nirmata.github.io/kyverno-charts/ kyverno \
 		--version $(INSTALL_VERSION) \
 		$(foreach CONFIG,$(subst $(COMMA), ,$(USE_CONFIG)),--values ./scripts/config/$(CONFIG)/kyverno.yaml) \
 		$(EXPLICIT_INSTALL_SETTINGS)
