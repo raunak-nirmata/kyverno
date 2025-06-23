@@ -84,9 +84,13 @@ import (
 )
 
 const (
-	exceptionWebhookControllerName    = "exception-webhook-controller"
-	celExceptionWebhookControllerName = "celexception-webhook-controller"
-	gctxWebhookControllerName         = "global-context-webhook-controller"
+	exceptionWebhookControllerName      = "exception-webhook-controller"
+	celExceptionWebhookControllerName   = "celexception-webhook-controller"
+	gctxWebhookControllerName           = "global-context-webhook-controller"
+	webhookControllerFinalizerName      = "kyverno.io/webhooks"
+	exceptionControllerFinalizerName    = "kyverno.io/exceptionwebhooks"
+	celExceptionControllerFinalizerName = "kyverno.io/celexceptionwebhooks"
+	gctxControllerFinalizerName         = "kyverno.io/globalcontextwebhooks"
 )
 
 var (
@@ -136,10 +140,12 @@ func createrLeaderControllers(
 	webhookTimeout int,
 	autoUpdateWebhooks bool,
 	excludeBootstrapResources bool,
+	autoDeleteWebhooks bool,
 	kubeInformer kubeinformers.SharedInformerFactory,
 	kubeKyvernoInformer kubeinformers.SharedInformerFactory,
 	kyvernoInformer kyvernoinformer.SharedInformerFactory,
 	caInformer corev1informers.SecretInformer,
+	cmInformer corev1informers.ConfigMapInformer,
 	tlsInformer corev1informers.SecretInformer,
 	deploymentInformer appsv1informers.DeploymentInformer,
 	kubeClient kubernetes.Interface,
@@ -168,6 +174,7 @@ func createrLeaderControllers(
 		dynamicClient.Discovery(),
 		kubeClient.AdmissionregistrationV1().MutatingWebhookConfigurations(),
 		kubeClient.AdmissionregistrationV1().ValidatingWebhookConfigurations(),
+		kubeClient.CoreV1().ConfigMaps(config.KyvernoNamespace()),
 		kubeClient.CoordinationV1().Leases(config.KyvernoNamespace()),
 		kyvernoClient,
 		kubeInformer.Admissionregistration().V1().MutatingWebhookConfigurations(),
@@ -184,6 +191,7 @@ func createrLeaderControllers(
 		kyvernoInformer.Policies().V1beta1().NamespacedMutatingPolicies(),
 		deploymentInformer,
 		caInformer,
+		cmInformer,
 		kubeKyvernoInformer.Coordination().V1().Leases(),
 		kubeInformer.Rbac().V1().ClusterRoles(),
 		serverIP,
@@ -191,17 +199,23 @@ func createrLeaderControllers(
 		servicePort,
 		autoUpdateWebhooks,
 		excludeBootstrapResources,
+		autoDeleteWebhooks,
 		admissionReports,
 		runtime,
 		configuration,
 		caSecretName,
+		webhookcontroller.WebhookCleanupSetup(kubeClient, webhookControllerFinalizerName),
+		webhookcontroller.WebhookCleanupHandler(kubeClient, webhookControllerFinalizerName),
 		stateRecorder,
 	)
 	exceptionWebhookController := genericwebhookcontroller.NewController(
 		exceptionWebhookControllerName,
 		kubeClient.AdmissionregistrationV1().ValidatingWebhookConfigurations(),
+		kubeClient.CoreV1().ConfigMaps(config.KyvernoNamespace()),
 		kubeInformer.Admissionregistration().V1().ValidatingWebhookConfigurations(),
 		caInformer,
+		cmInformer,
+		deploymentInformer,
 		config.ExceptionValidatingWebhookConfigurationName,
 		config.ExceptionValidatingWebhookServicePath,
 		serverIP,
@@ -222,12 +236,19 @@ func createrLeaderControllers(
 		genericwebhookcontroller.None,
 		configuration,
 		caSecretName,
+		runtime,
+		autoDeleteWebhooks,
+		webhookcontroller.WebhookCleanupSetup(kubeClient, exceptionControllerFinalizerName),
+		webhookcontroller.WebhookCleanupHandler(kubeClient, exceptionControllerFinalizerName),
 	)
 	celExceptionWebhookController := genericwebhookcontroller.NewController(
 		celExceptionWebhookControllerName,
 		kubeClient.AdmissionregistrationV1().ValidatingWebhookConfigurations(),
+		kubeClient.CoreV1().ConfigMaps(config.KyvernoNamespace()),
 		kubeInformer.Admissionregistration().V1().ValidatingWebhookConfigurations(),
 		caInformer,
+		cmInformer,
+		deploymentInformer,
 		config.CELExceptionValidatingWebhookConfigurationName,
 		config.CELExceptionValidatingWebhookServicePath,
 		serverIP,
@@ -248,12 +269,19 @@ func createrLeaderControllers(
 		genericwebhookcontroller.None,
 		configuration,
 		caSecretName,
+		runtime,
+		autoDeleteWebhooks,
+		webhookcontroller.WebhookCleanupSetup(kubeClient, celExceptionControllerFinalizerName),
+		webhookcontroller.WebhookCleanupHandler(kubeClient, celExceptionControllerFinalizerName),
 	)
 	gctxWebhookController := genericwebhookcontroller.NewController(
 		gctxWebhookControllerName,
 		kubeClient.AdmissionregistrationV1().ValidatingWebhookConfigurations(),
+		kubeClient.CoreV1().ConfigMaps(config.KyvernoNamespace()),
 		kubeInformer.Admissionregistration().V1().ValidatingWebhookConfigurations(),
 		caInformer,
+		cmInformer,
+		deploymentInformer,
 		config.GlobalContextValidatingWebhookConfigurationName,
 		config.GlobalContextValidatingWebhookServicePath,
 		serverIP,
@@ -274,6 +302,10 @@ func createrLeaderControllers(
 		genericwebhookcontroller.None,
 		configuration,
 		caSecretName,
+		runtime,
+		autoDeleteWebhooks,
+		webhookcontroller.WebhookCleanupSetup(kubeClient, gctxControllerFinalizerName),
+		webhookcontroller.WebhookCleanupHandler(kubeClient, gctxControllerFinalizerName),
 	)
 	policyStatusController := policystatuscontroller.NewController(
 		dynamicClient,
@@ -372,6 +404,7 @@ func main() {
 		omitEvents                      string
 		autoUpdateWebhooks              bool
 		excludeBootstrapResources       bool
+		autoDeleteWebhooks              bool
 		webhookRegistrationTimeout      time.Duration
 		admissionReports                bool
 		dumpPayload                     bool
@@ -398,6 +431,7 @@ func main() {
 	flagset.StringVar(&serverIP, "serverIP", "", "IP address where Kyverno controller runs. Only required if out-of-cluster.")
 	flagset.BoolVar(&autoUpdateWebhooks, "autoUpdateWebhooks", true, "Set this flag to 'false' to disable auto-configuration of the webhook.")
 	flagset.BoolVar(&excludeBootstrapResources, "excludeBootstrapResources", false, "Set this flag to 'true' to exclude cluster bootstrap resources (Node, CertificateSigningRequest) from Fail resource webhooks, avoiding a webhook deadlock when the cluster restarts with no Kyverno pods running. Policies targeting these resources are not enforced while this is enabled.")
+	flagset.BoolVar(&autoDeleteWebhooks, "autoDeleteWebhooks", false, "Set this flag to 'true' to enable autodeletion of webhook configurations using finalizers (requires extra permissions).")
 	flagset.DurationVar(&webhookRegistrationTimeout, "webhookRegistrationTimeout", 120*time.Second, "Timeout for webhook registration, e.g., 30s, 1m, 5m.")
 	flagset.Func(toggle.ProtectManagedResourcesFlagName, toggle.ProtectManagedResourcesDescription, toggle.ProtectManagedResources.Parse)
 	flagset.Func(toggle.ForceFailurePolicyIgnoreFlagName, toggle.ForceFailurePolicyIgnoreDescription, toggle.ForceFailurePolicyIgnore.Parse)
@@ -488,7 +522,8 @@ func main() {
 		caSecret := informers.NewSecretInformer(setup.KubeClient, config.KyvernoNamespace(), caSecretName, setup.ResyncPeriod)
 		tlsSecret := informers.NewSecretInformer(setup.KubeClient, config.KyvernoNamespace(), tlsSecretName, setup.ResyncPeriod)
 		kyvernoDeployment := informers.NewDeploymentInformer(setup.KubeClient, config.KyvernoNamespace(), config.KyvernoDeploymentName(), setup.ResyncPeriod)
-		if !informers.StartInformersAndWaitForCacheSync(signalCtx, setup.Logger, caSecret, tlsSecret, kyvernoDeployment) {
+		disableWebookConfigMap := informers.NewConfigMapInformer(setup.KubeClient, config.KyvernoNamespace(), config.KyvernoDisableWebhookConfigMapName(), setup.ResyncPeriod)
+		if !informers.StartInformersAndWaitForCacheSync(signalCtx, setup.Logger, caSecret, tlsSecret, kyvernoDeployment, disableWebookConfigMap) {
 			setup.Logger.Error(errors.New("failed to wait for cache sync"), "failed to wait for cache sync")
 			os.Exit(1)
 		}
@@ -637,10 +672,12 @@ func main() {
 					webhookTimeout,
 					autoUpdateWebhooks,
 					excludeBootstrapResources,
+					autoDeleteWebhooks,
 					kubeInformer,
 					kubeKyvernoInformer,
 					kyvernoInformer,
 					caSecret,
+					disableWebookConfigMap,
 					tlsSecret,
 					kyvernoDeployment,
 					setup.KubeClient,

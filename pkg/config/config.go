@@ -122,6 +122,7 @@ const (
 	matchConditions               = "matchConditions"
 	updateRequestThreshold        = "updateRequestThreshold"
 	maxContextSize                = "maxContextSize"
+	disableWebhooks               = "disableWebhooks"
 )
 
 const UpdateRequestThreshold = 1000
@@ -144,11 +145,17 @@ var (
 	kyvernoPodName = osutils.GetEnvWithFallback("KYVERNO_POD_NAME", "kyverno")
 	// kyvernoConfigMapName is the Kyverno configmap name
 	kyvernoConfigMapName = osutils.GetEnvWithFallback("INIT_CONFIG", "kyverno")
+	// kyvernoDisableWebhookConfigMapName is the Kyverno disable webhook configmap name
+	kyvernoDisableWebhookConfigMapName = osutils.GetEnvWithFallback("DISABLE_WEBHOOK_CONFIG", "kyverno-disable-webhook-cfg")
 	// kyvernoMetricsConfigMapName is the Kyverno metrics configmap name
 	kyvernoMetricsConfigMapName = osutils.GetEnvWithFallback("METRICS_CONFIG", "kyverno-metrics")
 	// kyvernoDryRunNamespace is the namespace for DryRun option of YAML verification
 	kyvernoDryrunNamespace = osutils.GetEnvWithFallback("KYVERNO_DRYRUN_NAMESPACE", "kyverno-dryrun")
 )
+
+func KyvernoDisableWebhookConfigMapName() string {
+	return kyvernoDisableWebhookConfigMapName
+}
 
 func KyvernoNamespace() string {
 	return kyvernoNamespace
@@ -184,6 +191,10 @@ func KyvernoConfigMapName() string {
 
 func KyvernoMetricsConfigMapName() string {
 	return kyvernoMetricsConfigMapName
+}
+
+func KyvernoDisableWebhookConfigMapKey() string {
+	return disableWebhooks
 }
 
 func KyvernoUserName(serviceaccount string) string {

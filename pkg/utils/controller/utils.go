@@ -187,3 +187,12 @@ func Cleanup[T any, R Object[T]](ctx context.Context, actual []R, expected []R, 
 	}
 	return nil
 }
+
+func KeyExistsInList[T comparable](name T, list []T) bool {
+	for _, elem := range list {
+		if name == elem {
+			return true
+		}
+	}
+	return false
+}

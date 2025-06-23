@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/go-logr/logr"
 	policiesv1v1beta1 "github.com/kyverno/api/api/policies.kyverno.io/v1beta1"
 	"github.com/kyverno/kyverno/api/kyverno"
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
@@ -16,6 +17,7 @@ import (
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	corev1listers "k8s.io/client-go/listers/core/v1"
 )
 
 func extractGenericPolicy(policy engineapi.GenericPolicy) policiesv1v1beta1.GenericPolicy {
@@ -280,6 +282,27 @@ func generateRuleKey(rule admissionregistrationv1.RuleWithOperations) string {
 		sb.WriteString(string(*rule.Scope))
 	}
 	return sb.String()
+}
+
+func FetchAndProcessConfigMap(client corev1listers.ConfigMapNamespaceLister, logger logr.Logger) ([]string, error) {
+	formattedWebhooks := []string{}
+	configMap, err := client.Get(config.KyvernoDisableWebhookConfigMapName())
+	if err != nil {
+		return nil, err
+	}
+
+	webhooksData, exists := configMap.Data[config.KyvernoDisableWebhookConfigMapKey()]
+	if !exists {
+		logger.Error(fmt.Errorf("not found"), "failed to fetch the key", "key:", config.KyvernoDisableWebhookConfigMapKey(), "in ConfigMap:", config.KyvernoDisableWebhookConfigMapName())
+	}
+
+	webhooks := strings.Split(webhooksData, ",")
+
+	for _, webhook := range webhooks {
+		formattedWebhooks = append(formattedWebhooks, strings.TrimSpace(webhook))
+	}
+
+	return formattedWebhooks, nil
 }
 
 const (
