@@ -27,9 +27,8 @@ RUN GOOS=linux GOARCH=$TARGETARCH \
     CGO_ENABLED=1 FIPS_ENABLED=1 \
     go build -ldflags="${LD_FLAGS}" -o /app/${OUTPUT} ${MAIN_FILE}
 
-
 RUN groupadd --system appgroup && \
-    useradd --system --gid appgroup --home-dir /nonexistent --shell /usr/sbin/nologin appuser && \
+    useradd --system --uid 1001 --gid appgroup --home-dir /nonexistent --shell /usr/sbin/nologin appuser && \
     chown appuser:appgroup /app/${OUTPUT}
 
 FROM mcr.microsoft.com/cbl-mariner/distroless/base:2.0-nonroot
@@ -42,6 +41,6 @@ COPY --from=builder /app/${OUTPUT} /${OUTPUT}
 
 COPY --from=builder /etc/ssl/certs /etc/ssl/certs
 
-USER appuser
+USER 1001
 
 ENTRYPOINT ["/${OUTPUT}"]
