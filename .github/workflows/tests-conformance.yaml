@@ -2,7 +2,6 @@
 
 name: Conformance tests
 
-permissions: {}
 
 on:
   workflow_call: {}

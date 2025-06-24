@@ -2,7 +2,6 @@
 
 name: helm-release
 
-permissions: {}
 
 concurrency:
   group: helm-gh-pages-${{ github.repository }}
