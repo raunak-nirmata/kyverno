@@ -9,7 +9,6 @@
 
 name: Codecov
 
-permissions: {}
 
 on:
   push:
