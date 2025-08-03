@@ -1,0 +1,14 @@
+{
+  "components": [
+    "ghcr.io/nirmata/kyverno",
+    "ghcr.io/nirmata/kyvernopre", 
+    "ghcr.io/nirmata/background-controller",
+    "ghcr.io/nirmata/cleanup-controller",
+    "ghcr.io/nirmata/reports-controller"
+  ],
+  "supported_series": [
+    "1.12",
+    "1.13", 
+    "1.14"
+  ]
+} 
