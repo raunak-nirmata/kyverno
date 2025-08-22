@@ -15,3 +15,6 @@ cmd/background-controller/background-controller
 cmd/readiness-checker/readiness-checker
 coverage.out
 kyverno.tar
+.cache/
+trivy-results.sarif
+**/*-bom.cdx.json
