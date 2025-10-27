@@ -293,7 +293,7 @@ func FetchAndProcessConfigMap(client corev1listers.ConfigMapNamespaceLister, log
 
 	webhooksData, exists := configMap.Data[config.KyvernoDisableWebhookConfigMapKey()]
 	if !exists {
-		logger.Error(fmt.Errorf("not found"), "failed to fetch the key", "key:", config.KyvernoDisableWebhookConfigMapKey(), "in ConfigMap:", config.KyvernoDisableWebhookConfigMapName())
+		logger.V(4).Info("disable-webhook key not found in ConfigMap", "key", config.KyvernoDisableWebhookConfigMapKey(), "configMap", config.KyvernoDisableWebhookConfigMapName())
 	}
 
 	webhooks := strings.Split(webhooksData, ",")

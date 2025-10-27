@@ -263,7 +263,7 @@ func (c *controller) reconcileWebhookDeletionByName(ctx context.Context, name st
 	webhooks, err := webhook.FetchAndProcessConfigMap(c.configmapLister, c.logger)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			c.logger.Info("failed to fetch the ConfigMap", config.KyvernoDisableWebhookConfigMapName())
+			c.logger.V(4).Info("disable-webhook ConfigMap not found", "configMap", config.KyvernoDisableWebhookConfigMapName())
 			return "", nil
 		} else {
 			return "", err

@@ -812,7 +812,7 @@ func (c *controller) reconcile(ctx context.Context, logger logr.Logger, key, nam
 		return err
 	}
 	if disableWebookName != "" {
-		logger.Info("inside the disableWebhookName", "webhook", name)
+		logger.V(4).Info("inside the disableWebhookName", "webhook", name)
 		name = disableWebookName
 		disableWebhook = true
 	}
@@ -887,13 +887,13 @@ func (c *controller) reconcileWebhookDeletionByName(ctx context.Context, name st
 	webhooks, err := FetchAndProcessConfigMap(c.cmLister.ConfigMaps(config.KyvernoNamespace()), logger)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.Info("failed to fetch the ConfigMap", config.KyvernoDisableWebhookConfigMapName())
+			logger.V(4).Info("disable-webhook ConfigMap not found", "configMap", config.KyvernoDisableWebhookConfigMapName())
 			return "", nil
 		} else {
 			return "", err
 		}
 	}
-	logger.Info("disableWebhookConfigMap is found", "webhooks:", webhooks)
+	logger.V(4).Info("disable-webhook ConfigMap found", "webhooks", webhooks)
 	if controllerutils.KeyExistsInList(name, webhooks) {
 		if controllerutils.KeyExistsInList(name, validationWebhooks) {
 			err := c.vwcClient.Delete(ctx, name, metav1.DeleteOptions{})
