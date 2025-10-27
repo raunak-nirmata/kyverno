@@ -28,4 +28,6 @@ type GlobalContextEntryExpansion interface{}
 
 type PolicyExpansion interface{}
 
+type NamespacedImageValidatingPolicyExpansion interface{}
+
 type PolicyExceptionExpansion interface{}
