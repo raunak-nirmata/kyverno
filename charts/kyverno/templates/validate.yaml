@@ -24,6 +24,60 @@
 {{- fail "CRD clusterephemeralreports disabled while reportsController enabled" }}
 {{- end }}
 
+{{- if and (eq .Values.crds.reportsServer.enabled true) (eq (include "kyverno.installReportsServer" .) "false") -}}
+  {{- $reportsServerPods := lookup "v1" "Pod" (include "kyverno.namespace" .) "" -}}
+  {{- $apiServices := lookup "apiregistration.k8s.io/v1" "APIService" "" "" -}}
+  {{- if or $reportsServerPods $apiServices -}}
+    {{- $reportsServerRunning := false -}}
+    {{- range $reportsServerPods.items -}}
+      {{- if contains "reports-server" .metadata.name -}}
+        {{- if eq .status.phase "Running" -}}
+          {{- $reportsServerRunning = true -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+
+    {{- $reportsServerAPIAvailable := false -}}
+    {{- range $apiServices.items -}}
+      {{- if and .spec.service (contains "reports-server" .spec.service.name) -}}
+        {{- if .status.conditions -}}
+          {{- range .status.conditions -}}
+            {{- if and (eq .type "Available") (eq .status "True") -}}
+              {{- $reportsServerAPIAvailable = true -}}
+            {{- end -}}
+          {{- end -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+
+    {{- if not $reportsServerRunning -}}
+      {{- fail (join "\n" (list
+        ""
+        ""
+        "  +--------------------------------------------------------------------------------------------------------------------------------------+"
+        "  | Reports Server is enabled but no running reports-server pod was found.                                                               |"
+        "  | Please ensure the reports-server is deployed and running before proceeding.                                                          |"
+        "  +--------------------------------------------------------------------------------------------------------------------------------------+"
+        ""
+        ))
+      -}}
+    {{- end -}}
+
+    {{- if not $reportsServerAPIAvailable -}}
+      {{- fail (join "\n" (list
+        ""
+        ""
+        "  +--------------------------------------------------------------------------------------------------------------------------------------+"
+        "  | Reports Server is enabled but the reports-server APIService is not available.                                                        |"
+        "  | Please ensure the reports-server APIService is registered and available before proceeding.                                            |"
+        "  +--------------------------------------------------------------------------------------------------------------------------------------+"
+        ""
+        ))
+      -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+
 {{- if hasKey .Values "mode" -}}
   {{- fail "mode is not supported anymore, please remove it from your release and use admissionController.replicas instead." -}}
 {{- end -}}
