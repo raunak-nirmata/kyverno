@@ -649,12 +649,12 @@ webhooksCleanup:
 
   image:
     # -- (string) Image registry
-    registry: ghcr.io
+    registry: reg.nirmata.io
     # -- Image repository
-    repository: kyverno/readiness-checker
+    repository: nirmata/kubectl
     # -- Image tag
-    # Defaults to `latest` if omitted
-    tag: ~
+    # Defaults to current release tag if omitted
+    tag: '1.33.2'
     # -- (string) Image pull policy
     # Defaults to image.pullPolicy if omitted
     pullPolicy: ~
