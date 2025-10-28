@@ -188,7 +188,7 @@ crds:
       registry: ~
       defaultRegistry: reg.nirmata.io
       # -- (string) Image repository
-      repository: kyverno/kyverno-cli
+      repository: nirmata/kyverno-cli
       # -- (string) Image tag
       # Defaults to appVersion in Chart.yaml if omitted
       tag: ~
@@ -1270,7 +1270,7 @@ admissionController:
       registry: ~
       defaultRegistry: reg.nirmata.io
       # -- Image repository
-      repository: kyverno/kyvernopre
+      repository: nirmata/kyvernopre
       # -- (string) Image tag
       # If missing, defaults to image.tag
       tag: ~
@@ -1319,7 +1319,7 @@ admissionController:
       registry: ~
       defaultRegistry: reg.nirmata.io
       # -- Image repository
-      repository: kyverno/kyverno
+      repository: nirmata/kyverno
       # -- (string) Image tag
       # Defaults to appVersion in Chart.yaml if omitted
       tag: ~
@@ -1594,7 +1594,7 @@ backgroundController:
     registry: ~
     defaultRegistry: reg.nirmata.io
     # -- Image repository
-    repository: kyverno/background-controller
+    repository: nirmata/background-controller
     # -- Image tag
     # Defaults to appVersion in Chart.yaml if omitted
     tag: ~
@@ -1967,7 +1967,7 @@ cleanupController:
     registry: ~
     defaultRegistry: reg.nirmata.io
     # -- Image repository
-    repository: kyverno/cleanup-controller
+    repository: nirmata/cleanup-controller
     # -- (string) Image tag
     # Defaults to appVersion in Chart.yaml if omitted
     tag: ~
@@ -2340,7 +2340,7 @@ reportsController:
     registry: ~
     defaultRegistry: reg.nirmata.io
     # -- Image repository
-    repository: kyverno/reports-controller
+    repository: nirmata/reports-controller
     # -- (string) Image tag
     # Defaults to appVersion in Chart.yaml if omitted
     tag: ~
