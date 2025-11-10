@@ -1,0 +1,24 @@
+name: Auto Sync Chart to kyverno-charts
+
+permissions:
+  contents: read
+  actions: read
+
+on:
+  push:
+    paths:
+      - 'charts/**'
+    branches:
+      - main
+      - release-*
+  workflow_dispatch:
+
+jobs:
+  sync-chart:
+    uses: nirmata/reusable-workflows/.github/workflows/chart-sync.yml@main
+    with:
+      source-repo: nirmata/enterprise-kyverno
+      chart-path: charts/kyverno
+      chart-name: kyverno
+    secrets:
+      GH_TOKEN: ${{ secrets.SYNC_BOT_TOKEN}}
