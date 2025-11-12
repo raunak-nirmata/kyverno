@@ -1065,7 +1065,7 @@ admissionController:
       port: 9443
       scheme: HTTPS
     failureThreshold: 20
-    initialDelaySeconds: 2
+    initialDelaySeconds: 7
     periodSeconds: 6
 
   # -- Liveness probe.
@@ -1953,7 +1953,7 @@ cleanupController:
       port: 9443
       scheme: HTTPS
     failureThreshold: 20
-    initialDelaySeconds: 2
+    initialDelaySeconds: 7
     periodSeconds: 6
 
   # -- Liveness probe.
