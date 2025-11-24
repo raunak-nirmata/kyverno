@@ -115,6 +115,7 @@ const (
 	excludeRoles                  = "excludeRoles"
 	excludeClusterRoles           = "excludeClusterRoles"
 	generateSuccessEvents         = "generateSuccessEvents"
+	generatePolicyEvents          = "generatePolicyEvents"
 	successEventActions           = "successEventActions"
 	webhooks                      = "webhooks"
 	webhookAnnotations            = "webhookAnnotations"
@@ -213,6 +214,8 @@ type Configuration interface {
 	ToFilter(kind schema.GroupVersionKind, subresource, namespace, name string) bool
 	// GetGenerateSuccessEvents return if should generate success events
 	GetGenerateSuccessEvents() bool
+	// GetGeneratePolicyEvents return if should generate events on policy objects
+	GetGeneratePolicyEvents() bool
 	// GetSuccessEventActions returns the set of event actions for which success events should be generated
 	GetSuccessEventActions() sets.Set[string]
 	// GetWebhook returns the webhook config
@@ -242,6 +245,7 @@ type configuration struct {
 	inclusions                    match
 	filters                       []filter
 	generateSuccessEvents         bool
+	generatePolicyEvents          bool
 	successEventActions           sets.Set[string]
 	webhook                       WebhookConfig
 	webhookAnnotations            map[string]string
@@ -300,6 +304,7 @@ func NewDefaultConfiguration(skipResourceFilters bool) *configuration {
 		skipResourceFilters:           skipResourceFilters,
 		defaultRegistry:               "docker.io",
 		enableDefaultRegistryMutation: true,
+		generatePolicyEvents:          true,
 	}
 }
 
@@ -355,6 +360,12 @@ func (cd *configuration) GetGenerateSuccessEvents() bool {
 	cd.mux.RLock()
 	defer cd.mux.RUnlock()
 	return cd.generateSuccessEvents
+}
+
+func (cd *configuration) GetGeneratePolicyEvents() bool {
+	cd.mux.RLock()
+	defer cd.mux.RUnlock()
+	return cd.generatePolicyEvents
 }
 
 func (cd *configuration) GetSuccessEventActions() sets.Set[string] {
@@ -423,6 +434,7 @@ func (cd *configuration) load(cm *corev1.ConfigMap) {
 	cd.inclusions = match{}
 	cd.filters = []filter{}
 	cd.generateSuccessEvents = false
+	cd.generatePolicyEvents = true
 	cd.successEventActions = sets.New[string]()
 	cd.webhook = WebhookConfig{}
 	cd.webhookAnnotations = nil
@@ -504,6 +516,20 @@ func (cd *configuration) load(cm *corev1.ConfigMap) {
 		} else {
 			cd.generateSuccessEvents = generateSuccessEvents
 			logger.V(2).Info("generateSuccessEvents configured")
+		}
+	}
+	// load generatePolicyEvents
+	generatePolicyEvents, ok := data[generatePolicyEvents]
+	if !ok {
+		logger.V(2).Info("generatePolicyEvents not set")
+	} else {
+		logger := logger.WithValues("generatePolicyEvents", generatePolicyEvents)
+		generatePolicyEvents, err := strconv.ParseBool(generatePolicyEvents)
+		if err != nil {
+			logger.Error(err, "generatePolicyEvents is not a boolean")
+		} else {
+			cd.generatePolicyEvents = generatePolicyEvents
+			logger.V(2).Info("generatePolicyEvents configured")
 		}
 	}
 	// load successEventActions
@@ -617,6 +643,7 @@ func (cd *configuration) unload() {
 	cd.inclusions = match{}
 	cd.filters = []filter{}
 	cd.generateSuccessEvents = false
+	cd.generatePolicyEvents = true
 	cd.successEventActions = sets.New[string]()
 	cd.webhook = WebhookConfig{}
 	cd.webhookAnnotations = nil

@@ -113,6 +113,10 @@ func (gen *controller) Add(infos ...Info) {
 				continue
 			}
 		}
+		if info.IsRegardingPolicy() && !gen.cfg.GetGeneratePolicyEvents() {
+			logger.V(6).Info("skipping event creation on policy object", "kind", info.Regarding.Kind, "name", info.Regarding.Name, "namespace", info.Regarding.Namespace, "reason", info.Reason, "action", info.Action, "note", info.Message)
+			continue
+		}
 
 		gen.emitEvent(info)
 		logger.V(6).Info("creating event", "kind", info.Regarding.Kind, "name", info.Regarding.Name, "namespace", info.Regarding.Namespace, "reason", info.Reason, "action", info.Action, "note", info.Message)
