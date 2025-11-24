@@ -23,3 +23,10 @@ func (i *Info) Resource() string {
 	}
 	return strings.Join([]string{i.Regarding.Kind, i.Regarding.Namespace, i.Regarding.Name}, "/")
 }
+
+// IsRegardingPolicy returns true if the event is regarding a Kyverno policy object
+// This checks if the Regarding object contains "kyverno" in APIVersion and Kind ends with "Policy"
+func (i *Info) IsRegardingPolicy() bool {
+	return strings.Contains(i.Regarding.APIVersion, "kyverno") &&
+		strings.HasSuffix(i.Regarding.Kind, "Policy")
+}

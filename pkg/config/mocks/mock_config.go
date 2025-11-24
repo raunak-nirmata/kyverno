@@ -80,6 +80,20 @@ func (mr *MockConfigurationMockRecorder) GetGenerateSuccessEvents() *gomock.Call
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetGenerateSuccessEvents", reflect.TypeOf((*MockConfiguration)(nil).GetGenerateSuccessEvents))
 }
 
+// GetGeneratePolicyEvents mocks base method.
+func (m *MockConfiguration) GetGeneratePolicyEvents() bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetGeneratePolicyEvents")
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// GetGeneratePolicyEvents indicates an expected call of GetGeneratePolicyEvents.
+func (mr *MockConfigurationMockRecorder) GetGeneratePolicyEvents() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetGeneratePolicyEvents", reflect.TypeOf((*MockConfiguration)(nil).GetGeneratePolicyEvents))
+}
+
 // GetSuccessEventActions mocks base method.
 func (m *MockConfiguration) GetSuccessEventActions() sets.Set[string] {
 	m.ctrl.T.Helper()
