@@ -176,6 +176,7 @@ crds:
       - imagevalidatingpolicies.policies.kyverno.io
       - namespacedimagevalidatingpolicies.policies.kyverno.io
       - mutatingpolicies.policies.kyverno.io
+      - namespacedmutatingpolicies.policies.kyverno.io
       - namespaceddeletingpolicies.policies.kyverno.io
       - namespacedgeneratingpolicies.policies.kyverno.io
       - namespacedimagevalidatingpolicies.policies.kyverno.io
