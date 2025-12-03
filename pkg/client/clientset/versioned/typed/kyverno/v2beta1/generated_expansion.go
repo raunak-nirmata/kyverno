@@ -28,6 +28,4 @@ type GlobalContextEntryExpansion interface{}
 
 type PolicyExpansion interface{}
 
-type NamespacedGeneratingPolicyExpansion interface{}
-
 type PolicyExceptionExpansion interface{}
