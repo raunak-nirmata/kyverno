@@ -68,9 +68,23 @@ jobs:
             const repo = context.repo.repo;
             const base = 'main';
             const head = `${owner}:main-oss`;
+            const reviewers = ['jigarjoshinirmata', 'krishbajaj1609', 'mastersans'];
+            
             const { data: prs } = await github.rest.pulls.list({ owner, repo, state: 'open', base, head });
             if (prs.length > 0) {
               core.info(`PR already open: #${prs[0].number}`);
+              // Add reviewers to existing PR if not already added
+              try {
+                await github.rest.pulls.requestReviewers({
+                  owner,
+                  repo,
+                  pull_number: prs[0].number,
+                  reviewers: reviewers
+                });
+                core.info(`Added reviewers to existing PR #${prs[0].number}`);
+              } catch (e) {
+                core.warning(`Could not add reviewers: ${e.message}`);
+              }
               return;
             }
             const title = 'chore: sync upstream main -> main-oss and PR to main';
@@ -79,8 +93,23 @@ jobs:
               `- Pulled upstream \`kyverno/kyverno@main\` into \`main-oss\`.`,
               '- Opening PR from \`main-oss\` to \`main\`.',
               '',
-              'This PR is auto-generated.'
+              'This PR is auto-generated.',
+              '',
+              'Reviewers: @jigarjoshinirmata @krishbajaj1609 @mastersans'
             ].join('\n');
             const { data: pr } = await github.rest.pulls.create({ owner, repo, title, body, base, head, maintainer_can_modify: true, draft: false });
             core.info(`Created PR #${pr.number}`);
+            
+            // Add reviewers to the newly created PR
+            try {
+              await github.rest.pulls.requestReviewers({
+                owner,
+                repo,
+                pull_number: pr.number,
+                reviewers: reviewers
+              });
+              core.info(`Added reviewers to PR #${pr.number}`);
+            } catch (e) {
+              core.warning(`Could not add reviewers: ${e.message}`);
+            }
 
