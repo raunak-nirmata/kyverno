@@ -14,7 +14,7 @@ env:
 
 jobs:
   get-branches:
-    runs-on: ubuntu-latest
+    runs-on: xr1
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
@@ -45,7 +45,7 @@ jobs:
 
   nightly-scan:
     needs: get-branches
-    runs-on: ubuntu-latest
+    runs-on: xr1
     permissions:
       contents: read
       packages: write

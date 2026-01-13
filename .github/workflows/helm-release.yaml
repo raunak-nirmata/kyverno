@@ -13,7 +13,7 @@ on:
 
 jobs:
   helm-tests:
-    runs-on: ubuntu-latest
+    runs-on: xr1
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -36,7 +36,7 @@ jobs:
         run: ct lint --target-branch=main --check-version-increment=false --validate-maintainers=false
 
   linter-artifacthub:
-    runs-on: ubuntu-latest
+    runs-on: xr1
     container:
       image: artifacthub/ah
       options: --user root
@@ -48,7 +48,7 @@ jobs:
         run: ah lint
 
   create-release:
-    runs-on: ubuntu-latest
+    runs-on: xr1
     needs: helm-tests
     permissions:
       contents: write

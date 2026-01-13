@@ -1,5 +1,4 @@
 //go:build fips
-// +build fips
 
 package main
 
@@ -17,4 +16,4 @@ Refer Link: https://go.dev/src/crypto/tls/fipsonly/fipsonly.go
 
 import (
 	_ "crypto/tls/fipsonly"
-) //nolint:golint,unused
+) //nolint:unused

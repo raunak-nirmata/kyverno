@@ -2,6 +2,7 @@
 
 name: Cherry pick
 
+permissions: {}
 
 on:
   issue_comment:
