@@ -76,6 +76,7 @@ data:
   enableDefaultRegistryMutation: "true"
   defaultRegistry: "docker.io"
   generateSuccessEvents: "false"
+  generatePolicyEvents: "true"
   excludeGroups: "system:nodes"
   resourceFilters: >-
     [*/*,kyverno,*]
