@@ -11,7 +11,7 @@ jobs:
   check-go-version:
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: xr1
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

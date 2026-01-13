@@ -100,7 +100,7 @@ jobs:
       registry_username: ${{ github.actor }}
       registry_password: ${{ secrets.CR_PAT }}
   release-images:
-    runs-on: ubuntu-latest
+    runs-on: xr1
     permissions:
       contents: read
       id-token: write
@@ -355,7 +355,7 @@ jobs:
       registry-password: ${{ secrets.GITHUB_TOKEN }}
 
   create-release:
-    runs-on: ubuntu-latest
+    runs-on: xr1
     needs: release-images
     permissions:
       contents: write
@@ -397,7 +397,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   push-and-sign-install-manifest:
-    runs-on: ubuntu-latest
+    runs-on: xr1
     needs: create-release
     permissions:
       contents: write # needed to write releases
@@ -471,7 +471,7 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/manifests/kyverno:${{ github.ref_name }}
 
   release-cli-via-krew:
-    runs-on: ubuntu-latest
+    runs-on: xr1
     needs: create-release
     steps:
       - name: Checkout
