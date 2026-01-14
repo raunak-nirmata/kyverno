@@ -331,7 +331,7 @@ kyverno-fips: fmt vet
 docker-publish-kyverno-fips: docker-buildx-builder docker-build-and-push-kyverno-fips
 
 docker-build-and-push-kyverno-fips: docker-buildx-builder
-	@docker buildx build --file $(PWD)/Dockerfile.fips \
+	@docker buildx build --file $(PWD)/$(KYVERNO_DIR)/Dockerfile.fips \
 		--progress plain \
 		--platform linux/amd64,linux/arm64 \
 		--tag $(REPO_KYVERNO_FIPS):$(IMAGE_TAG) \
@@ -356,7 +356,7 @@ initContainer: fmt vet
 docker-publish-initContainer-fips: docker-buildx-builder docker-build-and-push-initContainer-fips 
 
 docker-build-and-push-initContainer-fips: docker-buildx-builder
-	@docker buildx build --file $(PWD)/Dockerfile.fips \
+	@docker buildx build --file $(PWD)/$(KYVERNOPRE_DIR)/Dockerfile.fips \
 		--progress plain \
 		--platform linux/amd64,linux/arm64 \
 		--tag $(REPO_KYVERNOPRE_FIPS):$(IMAGE_TAG) \
@@ -381,7 +381,7 @@ cli:
 docker-publish-cli-fips: docker-buildx-builder docker-build-and-push-cli-fips
 
 docker-build-and-push-cli-fips: docker-buildx-builder
-	@docker buildx build --file $(PWD)/Dockerfile.fips \
+	@docker buildx build --file $(PWD)/$(CLI_DIR)/Dockerfile.fips \
 		--progress plain \
 		--platform linux/amd64,linux/arm64 \
 		--tag $(REPO_CLI_FIPS):$(IMAGE_TAG) \
@@ -407,7 +407,7 @@ cleanup:
 docker-publish-cleanup-fips: docker-buildx-builder docker-build-and-push-cleanup-fips
 
 docker-build-and-push-cleanup-fips: docker-buildx-builder
-	@docker buildx build --file $(PWD)/Dockerfile.fips \
+	@docker buildx build --file $(PWD)/$(CLEANUP_DIR)/Dockerfile.fips \
 		--progress plain \
 		--platform linux/amd64,linux/arm64 \
 		--tag $(REPO_CLEANUP_FIPS):$(IMAGE_TAG) \
@@ -433,7 +433,7 @@ background:
 docker-publish-background-fips: docker-buildx-builder docker-build-and-push-background-fips
 
 docker-build-and-push-background-fips: docker-buildx-builder
-	@docker buildx build --file $(PWD)/Dockerfile.fips \
+	@docker buildx build --file $(PWD)/$(BACKGROUND_DIR)/Dockerfile.fips \
 		--progress plain \
 		--platform linux/amd64,linux/arm64 \
 		--tag $(REPO_BACKGROUND_FIPS):$(IMAGE_TAG) \
@@ -460,7 +460,7 @@ reports:
 docker-publish-reports-fips: docker-buildx-builder docker-build-and-push-reports-fips
 
 docker-build-and-push-reports-fips: docker-buildx-builder
-	@docker buildx build --file $(PWD)/Dockerfile.fips \
+	@docker buildx build --file $(PWD)/$(REPORTS_DIR)/Dockerfile.fips \
 		--progress plain \
 		--platform linux/amd64,linux/arm64 \
 		--tag $(REPO_REPORTS_FIPS):$(IMAGE_TAG) \
