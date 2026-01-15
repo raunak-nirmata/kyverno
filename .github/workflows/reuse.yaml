@@ -135,18 +135,18 @@ jobs:
 
     - name: Docker images publish
       if: ${{inputs.tag == 'image' && steps.extract_branch.outputs.branch == 'main'}}
-      run: make ${{inputs.publish_command}} FIPS_ENABLED=1
+      run: make ${{inputs.publish_command}} FIPS_ENABLED=1 REPO=${{ github.repository_owner }}
 
     - name: get image digest
       if: ${{inputs.tag == 'image' && steps.extract_branch.outputs.branch == 'main'}}
       id: get-step-image
       run: |
-        digest=$(make ${{inputs.digest_command}} FIPS_ENABLED=1) 
+        digest=$(make ${{inputs.digest_command}} FIPS_ENABLED=1 REPO=${{ github.repository_owner }}) 
         echo "digest=${digest}" >> $GITHUB_ENV
 
     - name: Docker release-images publish
       if: ${{inputs.tag == 'release' || inputs.tag == 'image' }}
-      run: make ${{inputs.publish_command}} FIPS_ENABLED=1
+      run: make ${{inputs.publish_command}} FIPS_ENABLED=1 REPO=${{ github.repository_owner }}
 
     - name: Clear Sigstore TUF Cache
       run: |
@@ -156,7 +156,7 @@ jobs:
       if: ${{ inputs.tag == 'release' || (inputs.tag == 'image' && steps.check-branch.outputs.match == 'true') }}
       id: get-step
       run: |
-        digest=$(make ${{inputs.digest_command}} FIPS_ENABLED=1  2>/dev/null || true)
+        digest=$(make ${{inputs.digest_command}} FIPS_ENABLED=1 REPO=${{ github.repository_owner }} 2>/dev/null || true)
         if [[ -z "$digest" ]]; then
           echo "Error: Unable to generate digest. Ensure the repository exists and credentials are valid." >&2
           exit 1
