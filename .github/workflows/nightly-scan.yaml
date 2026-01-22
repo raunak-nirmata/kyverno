@@ -89,7 +89,7 @@ jobs:
 
       - name: Image scanning
         id: scan
-        uses: nirmata/reusable-workflows/.github/actions/image-scanning@main
+        uses: nirmata/reusable-workflows/.github/actions/image-scanning@e4fa3989ecdf045e6ec82d9cc316cb5b0ac88525 # main
         with:
           pcc_url: ${{ secrets.PCC_URL }}
           pcc_user: ${{ secrets.PCC_USER }}

@@ -20,13 +20,13 @@ jobs:
     steps:
       - name: Generate token
         id: generate-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
         with:
           app-id: ${{ secrets.NIRMATA_INTERNAL_APP_ID }}
           private-key: ${{ secrets.NIRMATA_INTERNAL_PRIVATE_KEY }}
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           token: ${{ steps.generate-token.outputs.token }}
           fetch-depth: 0
@@ -60,7 +60,7 @@ jobs:
 
       - name: Ensure PR from main-oss to main exists
         if: steps.ahead.outputs.ahead_by != '0'
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           github-token: ${{ steps.generate-token.outputs.token }}
           script: |
