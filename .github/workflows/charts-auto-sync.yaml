@@ -16,7 +16,7 @@ on:
 
 jobs:
   sync-chart:
-    uses: nirmata/reusable-workflows/.github/workflows/chart-sync.yml@main
+    uses: nirmata/reusable-workflows/.github/workflows/chart-sync.yml@e4fa3989ecdf045e6ec82d9cc316cb5b0ac88525 # main
     with:
       source-repo: nirmata/enterprise-kyverno
       chart-path: charts/kyverno
