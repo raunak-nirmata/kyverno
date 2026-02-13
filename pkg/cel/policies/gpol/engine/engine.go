@@ -29,11 +29,6 @@ var (
 	errNilCompiledPolicy = errors.New("compiled generating policy is nil")
 )
 
-var (
-	errNilPolicy         = errors.New("generating policy is nil")
-	errNilCompiledPolicy = errors.New("compiled generating policy is nil")
-)
-
 type Engine interface {
 	Handle(request engine.EngineRequest, policy Policy, cacheRestore bool) (EngineResponse, error)
 }

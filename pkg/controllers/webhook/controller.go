@@ -94,14 +94,6 @@ var (
 		Resources:   []string{"generatingpolicies"},
 		APIGroups:   []string{"policies.kyverno.io"},
 		APIVersions: []string{"v1alpha1", "v1beta1", "v1"},
-<<<<<<< HEAD
-	}
-	namespacedGeneratingPolicyRule = admissionregistrationv1.Rule{
-		Resources:   []string{"namespacedgeneratingpolicies"},
-		APIGroups:   []string{"policies.kyverno.io"},
-		APIVersions: []string{"v1beta1", "v1"},
-=======
->>>>>>> 60c506320 (Policies api version bump (#14536))
 	}
 	namespacedGeneratingPolicyRule = admissionregistrationv1.Rule{
 		Resources:   []string{"namespacedgeneratingpolicies"},
