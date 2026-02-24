@@ -585,7 +585,7 @@ test:
     repository: kyverno/readiness-checker
     # -- Image tag
     # Defaults to `latest` if omitted
-    tag: ~
+    tag: 'v0.1.0'
     # -- (string) Image pull policy
     # Defaults to image.pullPolicy if omitted
     pullPolicy: ~
@@ -649,12 +649,12 @@ webhooksCleanup:
 
   image:
     # -- (string) Image registry
-    registry: reg.nirmata.io
-    # -- Image repository
-    repository: nirmata/kubectl
+    registry: ghcr.io
+    # -- Image repository (readiness-checker supports delete-webhooks and scale-deploy)
+    repository: kyverno/readiness-checker
     # -- Image tag
-    # Defaults to current release tag if omitted
-    tag: '1.33.2'
+    # Defaults to `latest` if omitted
+    tag: ~
     # -- (string) Image pull policy
     # Defaults to image.pullPolicy if omitted
     pullPolicy: ~
@@ -2556,12 +2556,6 @@ reports-server:
     enabled: false
   fipsEnabled: false
 
-
-  # cloudnative-pg:
-  #   crds:
-  #     create: false
-
-
   # -- Name override
   nameOverride: ""
 
@@ -2572,7 +2566,7 @@ reports-server:
   replicaCount: 1
 
   image:
-    # -- Image registry
+    # -- (string) Image registry
     registry: reg.nirmata.io
     # -- Image repository
     repository: nirmata/reports-server
