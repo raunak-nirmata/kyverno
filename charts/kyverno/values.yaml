@@ -292,6 +292,16 @@ config:
   # -- Additional annotations to add to the configmap.
   annotations: {}
 
+  # -- Disable auto webhook generation. This is useful for environments like AKS
+  # where certain webhooks may cause issues.
+  disableAutoWebhookGeneration:
+    # -- Enable the disableAutoWebhookGeneration feature
+    enable: false
+    # -- List of webhooks to disable
+    webhooks:
+      - kyverno-policy-validating-webhook-cfg
+      - kyverno-exception-validating-webhook-cfg
+
   # -- Enable registry mutation for container images. Enabled by default.
   enableDefaultRegistryMutation: true
 
