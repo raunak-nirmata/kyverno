@@ -1,0 +1,175 @@
+# Triggered by kyverno-charts when a reports-server chart is released (repository_dispatch).
+# Vendors the new chart .tgz on each target release branch and opens PRs.
+
+name: Sync reports-server from kyverno-charts
+
+on:
+  repository_dispatch:
+    types: [reports-server-released]
+
+env:
+  REPORTS_SERVER_CHART_NAME: reports-server
+  KYVERNO_CHART_PATH: charts/kyverno
+  TARGET_BRANCHES: release-1.15-n4k,release-1.16-n4k,release-1.17-n4k
+
+jobs:
+  sync-reports-server:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Get reports-server version
+        id: version
+        run: |
+          v="${{ github.event.client_payload.reports_server_version }}"
+          if [ -z "$v" ]; then
+            echo "::error::Missing client_payload.reports_server_version"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Triggered for reports-server version $v"
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.NIRMATA_INTERNAL_APP_ID }}
+          private-key: ${{ secrets.NIRMATA_INTERNAL_PRIVATE_KEY }}
+          owner: nirmata
+          repositories: enterprise-kyverno
+
+      - name: Checkout enterprise-kyverno
+        uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Set up tools
+        run: |
+          pip3 install ruamel.yaml
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Download reports-server chart
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          CHART_TGZ="${REPORTS_SERVER_CHART_NAME}-${VERSION}.tgz"
+          DOWNLOAD_URL="https://github.com/nirmata/kyverno-charts/releases/download/${REPORTS_SERVER_CHART_NAME}-${VERSION}/${CHART_TGZ}"
+          echo "Downloading $DOWNLOAD_URL"
+          curl -sSLf -o "/tmp/${CHART_TGZ}" "$DOWNLOAD_URL"
+
+          mkdir -p /tmp/upstream-chart
+          tar -xzf "/tmp/${CHART_TGZ}" -C /tmp/upstream-chart
+          echo "Downloaded and extracted $CHART_TGZ"
+
+      - name: Process each release branch
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          CHART_TGZ="${REPORTS_SERVER_CHART_NAME}-${VERSION}.tgz"
+          UPSTREAM_VALUES="/tmp/upstream-chart/${REPORTS_SERVER_CHART_NAME}/values.yaml"
+
+          git config user.name "nirmata-internal-app[bot]"
+          git config user.email "nirmata-internal-app[bot]@users.noreply.github.com"
+
+          for TARGET_BRANCH in ${TARGET_BRANCHES//,/ }; do
+            echo "::group::Processing $TARGET_BRANCH"
+
+            FEATURE_BRANCH="chore/reports-server-${VERSION}-${TARGET_BRANCH}"
+
+            git fetch origin "$TARGET_BRANCH"
+            git checkout "$TARGET_BRANCH"
+            git pull origin "$TARGET_BRANCH"
+            git checkout -b "$FEATURE_BRANCH"
+
+            # ---- Capture old version for PR description ----
+            OLD_RS_VERSION=$(yq ".dependencies[] | select(.name == \"${REPORTS_SERVER_CHART_NAME}\") | .version" \
+              "${KYVERNO_CHART_PATH}/Chart.yaml")
+
+            # ---- Remove old reports-server .tgz, copy new one ----
+            rm -f "${KYVERNO_CHART_PATH}/charts/${REPORTS_SERVER_CHART_NAME}-"*.tgz
+            mkdir -p "${KYVERNO_CHART_PATH}/charts"
+            cp "/tmp/${CHART_TGZ}" "${KYVERNO_CHART_PATH}/charts/"
+
+            # ---- Update Chart.yaml dependency version (keep repository as-is) ----
+            yq -i "(.dependencies[] | select(.name == \"${REPORTS_SERVER_CHART_NAME}\")).version = \"${VERSION}\"" \
+              "${KYVERNO_CHART_PATH}/Chart.yaml"
+
+            # ---- Bump chart patch version, preserving any pre-release suffix ----
+            CURRENT_CHART_VERSION=$(yq '.version' "${KYVERNO_CHART_PATH}/Chart.yaml")
+            BASE_VERSION=$(echo "$CURRENT_CHART_VERSION" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+            SUFFIX=$(echo "$CURRENT_CHART_VERSION" | sed "s/^${BASE_VERSION}//")
+            MAJOR=$(echo "$BASE_VERSION" | cut -d. -f1)
+            MINOR=$(echo "$BASE_VERSION" | cut -d. -f2)
+            PATCH=$(echo "$BASE_VERSION" | cut -d. -f3)
+            NEW_PATCH=$((PATCH + 1))
+            NEW_CHART_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}${SUFFIX}"
+            yq -i ".version = \"${NEW_CHART_VERSION}\"" "${KYVERNO_CHART_PATH}/Chart.yaml"
+
+            # ---- Merge new values.yaml keys (comment-preserving) ----
+            MERGE_OUTPUT=$(python3 .github/scripts/merge-reports-server-values.py \
+              "$UPSTREAM_VALUES" \
+              "${KYVERNO_CHART_PATH}/values.yaml" \
+              "${KYVERNO_CHART_PATH}/values.yaml" 2>&1) || true
+            echo "$MERGE_OUTPUT"
+
+            # ---- Commit ----
+            git add "${KYVERNO_CHART_PATH}/Chart.yaml" \
+                    "${KYVERNO_CHART_PATH}/values.yaml" \
+                    "${KYVERNO_CHART_PATH}/charts/"
+
+            if git diff --staged --quiet; then
+              echo "No changes on $TARGET_BRANCH — skipping"
+              git checkout main
+              git branch -D "$FEATURE_BRANCH" 2>/dev/null || true
+              echo "::endgroup::"
+              continue
+            fi
+
+            git commit -m "chore: vendor reports-server ${VERSION} (chart ${NEW_CHART_VERSION})"
+            git push -u origin "$FEATURE_BRANCH"
+
+            # ---- Create PR with rich description ----
+            cat > /tmp/pr-body.md <<EOF
+          ## Summary
+
+          Automated vendor of reports-server chart **${VERSION}** (was ${OLD_RS_VERSION}).
+          N4K chart version bumped to **${NEW_CHART_VERSION}** (was ${CURRENT_CHART_VERSION}).
+
+          ## Changes
+
+          - Replaced \`charts/kyverno/charts/reports-server-${OLD_RS_VERSION}.tgz\` with \`reports-server-${VERSION}.tgz\`
+          - Updated \`Chart.yaml\` dependency version: \`${OLD_RS_VERSION}\` → \`${VERSION}\`
+          - Bumped chart version: \`${CURRENT_CHART_VERSION}\` → \`${NEW_CHART_VERSION}\`
+
+          ## Values Merge
+
+          \`\`\`
+          ${MERGE_OUTPUT}
+          \`\`\`
+
+          ## Review Checklist
+
+          - [ ] Verify no breaking changes in reports-server
+          - [ ] Check if new values.yaml keys need documentation
+          - [ ] Confirm chart version bump is appropriate
+          EOF
+
+            gh pr create \
+              --base "$TARGET_BRANCH" \
+              --head "$FEATURE_BRANCH" \
+              --title "chore($TARGET_BRANCH): vendor reports-server ${VERSION}" \
+              --body-file /tmp/pr-body.md || true
+
+            git checkout main
+            git branch -D "$FEATURE_BRANCH" 2>/dev/null || true
+            echo "::endgroup::"
+          done
+
+          # ---- Cleanup ----
+          rm -rf /tmp/upstream-chart "/tmp/${CHART_TGZ}"
