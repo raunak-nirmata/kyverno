@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/oss/go/microsoft/golang:1.25.7-cbl-mariner2.0 AS builder
+FROM mcr.microsoft.com/oss/go/microsoft/golang:1.25.8-azurelinux3.0 AS builder
 
 ENV GOPATH=/go \
     PATH=/usr/local/go/bin:/go/bin:/usr/local/bin:/usr/bin:$PATH \
@@ -32,7 +32,7 @@ RUN groupadd --system appgroup && \
     useradd --system --uid 1001 --gid appgroup --home-dir /nonexistent --shell /usr/sbin/nologin appuser && \
     chown appuser:appgroup /app/${OUTPUT}
 
-FROM mcr.microsoft.com/cbl-mariner/distroless/base:2.0-nonroot
+FROM mcr.microsoft.com/azurelinux/distroless/base:3.0
 
 COPY --from=builder /etc/passwd /etc/passwd
 
