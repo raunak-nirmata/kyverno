@@ -55,7 +55,13 @@ jobs:
         env:
           RELEASE_TYPE: ${{ inputs.release_type }}
           BASE_VERSION: ${{ inputs.base_version }}
-        run: python3 .github/scripts/determine-tag-version.py
+        run: |
+          SCRIPT="${{ github.workspace }}/.github/scripts/determine-tag-version.py"
+          if [[ ! -f "$SCRIPT" ]]; then
+            echo "::error::Missing $SCRIPT on branch ${{ inputs.branch }}. Merge main (or cherry-pick .github/scripts/determine-tag-version.py) into that branch, or set tag_override to skip this step."
+            exit 1
+          fi
+          python3 "$SCRIPT"
 
       - name: Resolve tag
         id: tag
