@@ -2,6 +2,8 @@
 
 name: Devcontainer
 
+permissions:
+  contents: read
 
 on:
   pull_request:
@@ -25,6 +27,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           # Required for tj-actions/changed-files on push (compare to preceding commit); OK for pull_request too.
           fetch-depth: 0
       - name: Check for .devcontainer changes
@@ -47,19 +50,3 @@ jobs:
         uses: devcontainers/ci@b63b30de439b47a52267f241112c5b453b673db5 # v0.3
         with:
           push: never
-
-  sync-issue:
-    if: always() && github.event_name == 'push'
-    needs:
-      - check
-    permissions:
-      issues: write
-    runs-on: ubuntu-slim
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Sync issue
-        uses: ./.github/actions/workflow/failure-issue
-        with:
-          conclusion: ${{ contains(needs.*.result, 'failure') && 'failure' || job.status }}
-          needs: ${{ toJSON(needs) }}

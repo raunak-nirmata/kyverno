@@ -11,10 +11,12 @@ jobs:
   check-go-version:
     permissions:
       contents: read
-    runs-on: xr1
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Check Go Version
         run: bash .github/scripts/check-go-version.sh

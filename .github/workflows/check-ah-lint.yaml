@@ -2,7 +2,8 @@
 
 name: Artifact Hub
 
-permissions: {}
+permissions:
+  contents: read
 
 on:
   pull_request:
@@ -28,22 +29,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Run ah lint
         working-directory: ./charts/
         run: ah lint
-
-  sync-issue:
-    if: always() && github.event_name == 'push'
-    needs:
-      - check
-    permissions:
-      issues: write
-    runs-on: ubuntu-slim
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Sync issue
-        uses: ./.github/actions/workflow/failure-issue
-        with:
-          conclusion: ${{ contains(needs.*.result, 'failure') && 'failure' || job.status }}
-          needs: ${{ toJSON(needs) }}

@@ -3,6 +3,9 @@
 
 name: Sync reports-server from kyverno-charts
 
+permissions:
+  contents: read
+
 on:
   repository_dispatch:
     types: [reports-server-released]
