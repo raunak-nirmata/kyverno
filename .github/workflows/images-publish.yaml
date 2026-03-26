@@ -2,6 +2,8 @@
 
 name: Publish images
 
+permissions:
+  contents: read
 
 on:
   push:
@@ -32,6 +34,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
           fetch-tags: true
       - uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1

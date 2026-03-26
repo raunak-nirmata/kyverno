@@ -2,7 +2,8 @@
 
 name: Cherry pick
 
-permissions: {}
+permissions:
+  contents: read
 
 on:
   issue_comment:
@@ -143,6 +144,7 @@ jobs:
         if: fromJSON(steps.check-merged.outputs.result).merged == true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - name: Cherry Pick

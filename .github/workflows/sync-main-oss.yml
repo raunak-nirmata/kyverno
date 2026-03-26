@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   sync:
-    runs-on: xr1
+    runs-on: ubuntu-latest
     steps:
       - name: Generate token
         id: generate-token

@@ -58,15 +58,15 @@ type controller struct {
 	queue workqueue.TypedRateLimitingInterface[any]
 
 	// config
-	controllerName string
-	logger         logr.Logger
-	webhookName    string
-	path           string
-	server         string
-	servicePort    int32
-	rules          []admissionregistrationv1.RuleWithOperations
-	failurePolicy  *admissionregistrationv1.FailurePolicyType
-	sideEffects    *admissionregistrationv1.SideEffectClass
+	controllerName      string
+	logger              logr.Logger
+	webhookName         string
+	path                string
+	server              string
+	servicePort         int32
+	rules               []admissionregistrationv1.RuleWithOperations
+	failurePolicy       *admissionregistrationv1.FailurePolicyType
+	sideEffects         *admissionregistrationv1.SideEffectClass
 	runtime             runtimeutils.Runtime
 	configuration       config.Configuration
 	labelSelector       *metav1.LabelSelector

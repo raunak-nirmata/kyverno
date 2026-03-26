@@ -1,0 +1,74 @@
+name: Manual Tag Releaser
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: >
+          Release type to create.
+          GA = General Availability (no suffix),
+          RC = Release Candidate (-rcN),
+          Dirty = Dirty release (-dirtyN, non-main/release branches only).
+        required: true
+        type: choice
+        options:
+          - ga
+          - rc
+          - dirty
+      branch:
+        description: The branch to release
+        required: true
+      base_version:
+        description: >
+          Fallback base tag used only when no previous n4k.nirmata tag exists on the
+          branch (e.g. v1.16.3-n4k.nirmata.0). Leave empty when a previous tag exists.
+        required: false
+      tag_override:
+        description: >
+          Optional: supply an explicit tag to bypass auto-determination and use this
+          value directly.
+        required: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Generate token
+        id: generate-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.NIRMATA_INTERNAL_APP_ID }}
+          private-key: ${{ secrets.NIRMATA_INTERNAL_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.branch }}
+          token: ${{ steps.generate-token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Determine next tag
+        id: determine-tag-version
+        if: ${{ inputs.tag_override == '' }}
+        env:
+          RELEASE_TYPE: ${{ inputs.release_type }}
+          BASE_VERSION: ${{ inputs.base_version }}
+        run: python3 .github/scripts/determine-tag-version.py
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [[ -n "${{ inputs.tag_override }}" ]]; then
+            echo "tag=${{ inputs.tag_override }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ steps.determine-tag-version.outputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.tag.outputs.tag }}" -m "Release ${{ steps.tag.outputs.tag }} Images."
+          git push origin "${{ steps.tag.outputs.tag }}"
