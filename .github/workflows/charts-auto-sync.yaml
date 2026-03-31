@@ -9,17 +9,51 @@ on:
     paths:
       - 'charts/**'
     branches:
-      - main
-      - xr1
-      - release-*
+      - release-*-n4k
   workflow_dispatch:
 
 jobs:
+
+  resolve-target-branch:
+    runs-on: ubuntu-latest
+    outputs:
+      target-branch: ${{ steps.resolve.outputs.target-branch }}
+    steps:
+      - name: Resolve target branch name
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_BOT_TOKEN }}
+        run: |
+          CURRENT_BRANCH="${{ github.ref_name }}"
+
+          # Extract version from current branch (e.g. release-1.17-n4k -> 1.17)
+          CURRENT_VERSION=$(echo "$CURRENT_BRANCH" | sed 's/^release-//' | sed 's/-n4k$//')
+
+          # List all release-*-n4k branches and extract their versions
+          LATEST_VERSION=$(gh api repos/nirmata/enterprise-kyverno/branches \
+            --paginate \
+            --jq '.[].name' \
+            | grep -E '^release-[0-9]+\.[0-9]+-n4k$' \
+            | sed 's/^release-//' | sed 's/-n4k$//' \
+            | sort -V | tail -n 1)
+
+          echo "Current version: $CURRENT_VERSION"
+          echo "Latest version:  $LATEST_VERSION"
+
+          if [ "$CURRENT_VERSION" = "$LATEST_VERSION" ]; then
+            echo "target-branch=main" >> "$GITHUB_OUTPUT"
+          else
+            echo "target-branch=$CURRENT_BRANCH" >> "$GITHUB_OUTPUT"
+          fi
+
   sync-chart:
-    uses: nirmata/reusable-workflows/.github/workflows/chart-sync.yml@e4fa3989ecdf045e6ec82d9cc316cb5b0ac88525 # main
+    needs: resolve-target-branch
+    uses: nirmata/reusable-workflows/.github/workflows/chart-sync.yml@38eef6f8959df1ab74ec6b0259ffa57f63dac557 # main
     with:
       source-repo: nirmata/enterprise-kyverno
       chart-path: charts/kyverno
       chart-name: kyverno
+      source-branch-name: ${{ github.ref_name }}
+      target-branch-name: ${{ needs.resolve-target-branch.outputs.target-branch }}
     secrets:
-      GH_TOKEN: ${{ secrets.SYNC_BOT_TOKEN}}
+      GH_TOKEN: ${{ secrets.SYNC_BOT_TOKEN }}
