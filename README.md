@@ -157,7 +157,8 @@ _Made with [contributors-img](https://contrib.rocks)_
 
 ## 📄 License
 
-Copyright 2026, the Kyverno project. All rights reserved.  
-Kyverno is licensed under the [Apache License 2.0](LICENSE).
+This software is proprietary to Nirmata Inc. and is made available under the terms of the [Nirmata Enterprise Software License Agreement](https://nirmata.com/eula/). By downloading, installing, or using this software, you acknowledge that you have read and understood, and agree to be bound by, all terms and conditions of that Agreement. If you do not agree, do not download, install, or use this software.
 
-Kyverno is a [Cloud Native Computing Foundation (CNCF) Incubating project](https://www.cncf.io/projects/) and was contributed by [Nirmata](https://nirmata.com/?utm_source=github&utm_medium=repository).
+Unauthorized use, reproduction, modification, or distribution of this software, in whole or in part, is strictly prohibited and may result in civil and criminal penalties.
+
+© 2026 Nirmata Inc. All rights reserved.
