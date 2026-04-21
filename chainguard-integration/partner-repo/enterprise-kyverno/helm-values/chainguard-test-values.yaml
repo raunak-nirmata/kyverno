@@ -1,0 +1,39 @@
+# Helm values for Chainguard image validation.
+# Replace <chainguard-registry> and image tags with the actual values
+# provided by Chainguard after images are built.
+#
+# Usage:
+#   helm upgrade --install kyverno \
+#     --repo https://nirmata.github.io/kyverno-charts/ kyverno \
+#     --namespace kyverno --create-namespace \
+#     -f helm-values/chainguard-test-values.yaml
+
+admissionController:
+  container:
+    image:
+      registry: cgr.dev
+      repository: nirmata/kyverno
+      tag: latest
+  initContainer:
+    image:
+      registry: cgr.dev
+      repository: nirmata/kyvernopre
+      tag: latest
+
+backgroundController:
+  image:
+    registry: cgr.dev
+    repository: nirmata/background-controller
+    tag: latest
+
+cleanupController:
+  image:
+    registry: cgr.dev
+    repository: nirmata/cleanup-controller
+    tag: latest
+
+reportsController:
+  image:
+    registry: cgr.dev
+    repository: nirmata/reports-controller
+    tag: latest
