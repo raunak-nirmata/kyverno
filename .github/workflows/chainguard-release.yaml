@@ -13,9 +13,13 @@ name: Chainguard Partner Release
 # Dirty tags (containing "-dirty") create a draft release only.
 # The Chainguard Factory ignores Draft releases, so they are safe for testing.
 #
-# Required secret: CHAINGUARD_PARTNER_REPO_PAT
-#   A GitHub PAT with repo write access to chainguard-partners/nirmata.
-#   Planned migration: replace with a dedicated GitHub App (see integration-plan.md §9.2).
+# Required secrets:
+#   CHAINGUARD_RELEASER_APP_ID      — GitHub App ID (created in nirmata org)
+#   CHAINGUARD_RELEASER_PRIVATE_KEY — GitHub App private key (.pem contents)
+#
+# The GitHub App must be installed on chainguard-partners/nirmata by Chainguard.
+# App install URL: https://github.com/apps/nirmata-chainguard-releaser/installations/new
+# See integration-plan.md §9.2 for details.
 
 permissions:
   contents: read
@@ -41,6 +45,15 @@ jobs:
       contents: read
 
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.CHAINGUARD_RELEASER_APP_ID }}
+          private-key: ${{ secrets.CHAINGUARD_RELEASER_PRIVATE_KEY }}
+          owner: chainguard-partners
+          repositories: nirmata
+
       - name: Resolve version
         id: version
         run: |
@@ -91,12 +104,12 @@ jobs:
       - name: Create draft release on chainguard-partners/nirmata
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          GH_TOKEN: ${{ secrets.CHAINGUARD_PARTNER_REPO_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: make chainguard-github-release
 
       - name: Publish release (GA tags only — skipped for dirty tags)
         if: steps.release-type.outputs.is_dirty == 'false'
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          GH_TOKEN: ${{ secrets.CHAINGUARD_PARTNER_REPO_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: make chainguard-publish-release
