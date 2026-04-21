@@ -582,23 +582,11 @@ Once Chainguard confirms cluster support:
 
 ### 9.2 Secrets and Credentials (`nirmata/enterprise-kyverno`)
 
-We start with a **PAT** for simplicity but will migrate to a **GitHub App** for production. The GitHub App approach is preferred long-term because it avoids coupling credentials to an individual user account, supports fine-grained permissions, and is easier to rotate.
+Classic PATs are blocked by the `chainguard-partners` org policy, and fine-grained PATs cannot be scoped to a third-party org. The **GitHub App approach is the only viable option** and is now the current implementation.
 
-#### Phase A — PAT (immediate, to unblock initial integration)
+> The app is created by Nirmata (giving us full control) and installed by Chainguard on `chainguard-partners/nirmata`. No credentials are tied to individual user accounts.
 
-1. Create a classic GitHub Personal Access Token (PAT) for a machine/bot account with:
-   - `repo` scope (to create releases and push tags on `chainguard-partners/nirmata`)
-2. Add as a repository secret in `nirmata/enterprise-kyverno`:
-   - **Secret name:** `CHAINGUARD_PARTNER_REPO_PAT`
-3. Reference in workflow:
-   ```yaml
-   env:
-     GH_TOKEN: ${{ secrets.CHAINGUARD_PARTNER_REPO_PAT }}
-   ```
-
-#### Phase B — GitHub App (target state)
-
-Create a dedicated GitHub App for Nirmata → Chainguard integration:
+#### GitHub App setup
 
 1. **Create the GitHub App** under the `nirmata` GitHub organization:
    - **Name:** `Nirmata Chainguard Releaser`
@@ -637,11 +625,10 @@ Create a dedicated GitHub App for Nirmata → Chainguard integration:
 
 **Secret names summary:**
 
-| Phase | Secret Name | Description |
-|---|---|---|
-| A (PAT) | `CHAINGUARD_PARTNER_REPO_PAT` | Classic PAT with repo scope, temporary |
-| B (App) | `CHAINGUARD_RELEASER_APP_ID` | GitHub App numeric ID |
-| B (App) | `CHAINGUARD_RELEASER_PRIVATE_KEY` | GitHub App PEM private key |
+| Secret Name | Description |
+|---|---|
+| `CHAINGUARD_RELEASER_APP_ID` | GitHub App numeric ID |
+| `CHAINGUARD_RELEASER_PRIVATE_KEY` | GitHub App PEM private key |
 
 ### 9.3 Makefile Changes (`nirmata/enterprise-kyverno`)
 
