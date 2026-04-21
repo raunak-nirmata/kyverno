@@ -1441,6 +1441,105 @@ dev-lab-policy-reporter: $(HELM) ## Deploy policy-reporter helm chart
 dev-lab-kwok: ## Deploy kwok
 	@kubectl apply -k ./scripts/config/kwok
 
+##################################
+# CHAINGUARD BINARY RELEASE
+##################################
+
+CHAINGUARD_OUT_DIR       ?= .chainguard-release
+CHAINGUARD_ARCHS         := amd64 arm64
+CHAINGUARD_OS            := linux
+CHAINGUARD_PARTNER_REPO  := chainguard-partners/nirmata
+CHAINGUARD_BINARY_PREFIX := enterprise-kyverno
+# Lazily evaluated so VERSION is resolved at recipe time, not parse time
+CHAINGUARD_TAG            = enterprise-kyverno-$(VERSION)
+
+.PHONY: chainguard-build-binaries
+chainguard-build-binaries: ## Cross-compile all N4K binaries for Chainguard (requires VERSION=)
+	@test -n "$(VERSION)" || (echo "Error: VERSION is required. Example: make chainguard-build-binaries VERSION=v1.17.0-n4k.nirmata.3" >&2 && exit 1)
+	@echo "Building binaries for Chainguard release ($(CHAINGUARD_TAG))..." >&2
+	@mkdir -p $(CHAINGUARD_OUT_DIR)
+	@for arch in $(CHAINGUARD_ARCHS); do \
+		echo "  Building for $(CHAINGUARD_OS)/$$arch..." >&2; \
+		GOOS=$(CHAINGUARD_OS) GOARCH=$$arch CGO_ENABLED=0 \
+			go build -o $(CHAINGUARD_OUT_DIR)/$(CHAINGUARD_BINARY_PREFIX)_kyverno_$(CHAINGUARD_OS)_$$arch \
+			-ldflags=$(LD_FLAGS) ./$(KYVERNO_DIR); \
+		GOOS=$(CHAINGUARD_OS) GOARCH=$$arch CGO_ENABLED=0 \
+			go build -o $(CHAINGUARD_OUT_DIR)/$(CHAINGUARD_BINARY_PREFIX)_kyvernopre_$(CHAINGUARD_OS)_$$arch \
+			-ldflags=$(LD_FLAGS) ./$(KYVERNOPRE_DIR); \
+		GOOS=$(CHAINGUARD_OS) GOARCH=$$arch CGO_ENABLED=0 \
+			go build -o $(CHAINGUARD_OUT_DIR)/$(CHAINGUARD_BINARY_PREFIX)_background-controller_$(CHAINGUARD_OS)_$$arch \
+			-ldflags=$(LD_FLAGS) ./$(BACKGROUND_DIR); \
+		GOOS=$(CHAINGUARD_OS) GOARCH=$$arch CGO_ENABLED=0 \
+			go build -o $(CHAINGUARD_OUT_DIR)/$(CHAINGUARD_BINARY_PREFIX)_cleanup-controller_$(CHAINGUARD_OS)_$$arch \
+			-ldflags=$(LD_FLAGS) ./$(CLEANUP_DIR); \
+		GOOS=$(CHAINGUARD_OS) GOARCH=$$arch CGO_ENABLED=0 \
+			go build -o $(CHAINGUARD_OUT_DIR)/$(CHAINGUARD_BINARY_PREFIX)_reports-controller_$(CHAINGUARD_OS)_$$arch \
+			-ldflags=$(LD_FLAGS) ./$(REPORTS_DIR); \
+		GOOS=$(CHAINGUARD_OS) GOARCH=$$arch CGO_ENABLED=0 \
+			go build -o $(CHAINGUARD_OUT_DIR)/$(CHAINGUARD_BINARY_PREFIX)_kubectl-kyverno_$(CHAINGUARD_OS)_$$arch \
+			-ldflags=$(LD_FLAGS) ./$(CLI_DIR); \
+		GOOS=$(CHAINGUARD_OS) GOARCH=$$arch CGO_ENABLED=0 \
+			go build -o $(CHAINGUARD_OUT_DIR)/$(CHAINGUARD_BINARY_PREFIX)_readiness-checker_$(CHAINGUARD_OS)_$$arch \
+			-ldflags=$(LD_FLAGS) ./$(READINESS_DIR); \
+	done
+	@echo "Binaries written to $(CHAINGUARD_OUT_DIR)/" >&2
+
+.PHONY: chainguard-generate-sbom
+chainguard-generate-sbom: ## Generate SBOMs for all Chainguard binaries via Syft (install: https://github.com/anchore/syft)
+	@which syft > /dev/null 2>&1 || (echo "Error: syft not found. Install: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin" >&2 && exit 1)
+	@echo "Generating SBOMs in $(CHAINGUARD_OUT_DIR)/..." >&2
+	@for arch in $(CHAINGUARD_ARCHS); do \
+		for bin in kyverno kyvernopre background-controller cleanup-controller reports-controller kubectl-kyverno readiness-checker; do \
+			echo "  SBOM: $(CHAINGUARD_BINARY_PREFIX)_$${bin}_$(CHAINGUARD_OS)_$$arch" >&2; \
+			syft $(CHAINGUARD_OUT_DIR)/$(CHAINGUARD_BINARY_PREFIX)_$${bin}_$(CHAINGUARD_OS)_$$arch \
+				-o spdx-json \
+				> $(CHAINGUARD_OUT_DIR)/$(CHAINGUARD_BINARY_PREFIX)_$${bin}_$(CHAINGUARD_OS)_$$arch.sbom.json; \
+		done; \
+	done
+	@echo "SBOMs done." >&2
+
+.PHONY: chainguard-github-release
+chainguard-github-release: ## Create draft GitHub Release on chainguard-partners/nirmata (requires VERSION= and GH_TOKEN)
+	@test -n "$(VERSION)" || (echo "Error: VERSION is required." >&2 && exit 1)
+	@which gh > /dev/null 2>&1 || (echo "Error: gh CLI not installed" >&2 && exit 1)
+	@echo "Creating draft release $(CHAINGUARD_TAG) on $(CHAINGUARD_PARTNER_REPO)..." >&2
+	@gh release view "$(CHAINGUARD_TAG)" --repo "$(CHAINGUARD_PARTNER_REPO)" > /dev/null 2>&1 && \
+		(echo "  Deleting existing release $(CHAINGUARD_TAG)..." >&2 && \
+		gh release delete "$(CHAINGUARD_TAG)" --repo "$(CHAINGUARD_PARTNER_REPO)" --yes) || true
+	@gh release create "$(CHAINGUARD_TAG)" \
+		--repo "$(CHAINGUARD_PARTNER_REPO)" \
+		--title "Enterprise Kyverno $(VERSION)" \
+		--notes "Enterprise Kyverno N4K release $(VERSION). Source: https://github.com/nirmata/enterprise-kyverno/releases/tag/$(VERSION)" \
+		--draft \
+		$(CHAINGUARD_OUT_DIR)/*
+	@echo "Draft release created: https://github.com/$(CHAINGUARD_PARTNER_REPO)/releases/tag/$(CHAINGUARD_TAG)" >&2
+
+.PHONY: chainguard-publish-release
+chainguard-publish-release: ## Publish the draft release on chainguard-partners/nirmata (triggers Chainguard Factory)
+	@test -n "$(VERSION)" || (echo "Error: VERSION is required." >&2 && exit 1)
+	@echo "Publishing release $(CHAINGUARD_TAG) on $(CHAINGUARD_PARTNER_REPO)..." >&2
+	@gh release edit "$(CHAINGUARD_TAG)" \
+		--repo "$(CHAINGUARD_PARTNER_REPO)" \
+		--draft=false
+	@echo "Release published. Chainguard Factory will pick it up within 1-12 hours." >&2
+
+.PHONY: chainguard-release
+chainguard-release: ## Full Chainguard release: build, SBOM, create and publish release (GA tags only)
+chainguard-release: chainguard-build-binaries
+chainguard-release: chainguard-generate-sbom
+chainguard-release: chainguard-github-release
+chainguard-release: chainguard-publish-release
+
+.PHONY: chainguard-release-draft
+chainguard-release-draft: ## Chainguard draft-only release for dirty/test tags — does NOT publish to Chainguard Factory
+chainguard-release-draft: chainguard-build-binaries
+chainguard-release-draft: chainguard-generate-sbom
+chainguard-release-draft: chainguard-github-release
+
+.PHONY: chainguard-clean
+chainguard-clean: ## Remove Chainguard build artifacts
+	@rm -rf $(CHAINGUARD_OUT_DIR)
+
 ########
 # HELP #
 ########

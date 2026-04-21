@@ -1,0 +1,102 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Chainguard Partner Release
+
+# Publishes precompiled N4K binaries to chainguard-partners/nirmata so
+# the Chainguard Factory can build hardened images from them.
+#
+# Triggers:
+#   - Automatic: every GA release tag (v*-n4k.nirmata.*) pushed to enterprise-kyverno
+#   - Manual:    workflow_dispatch with an explicit tag — use a *-dirty tag for testing
+#                without triggering a real Chainguard Factory build.
+#
+# Dirty tags (containing "-dirty") create a draft release only.
+# The Chainguard Factory ignores Draft releases, so they are safe for testing.
+#
+# Required secret: CHAINGUARD_PARTNER_REPO_PAT
+#   A GitHub PAT with repo write access to chainguard-partners/nirmata.
+#   Planned migration: replace with a dedicated GitHub App (see integration-plan.md §9.2).
+
+permissions:
+  contents: read
+
+on:
+  push:
+    tags:
+      - 'v*-n4k.nirmata.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >
+          Tag to release.
+          Use a *-dirty suffix for testing (creates a draft only — Chainguard Factory will ignore it).
+          Example: v1.17.0-n4k.nirmata.3-dirty
+        required: true
+        type: string
+
+jobs:
+  chainguard-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ steps.version.outputs.version }}
+          fetch-tags: true
+
+      - name: Determine release type
+        id: release-type
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if [[ "$VERSION" == *"-dirty"* ]]; then
+            echo "is_dirty=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Dirty tag detected ($VERSION) — will create a DRAFT release only. Chainguard Factory will not pick it up."
+          else
+            echo "is_dirty=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GA tag detected ($VERSION) — will create and publish release to Chainguard Factory."
+          fi
+
+      - name: Setup Go
+        uses: ./.github/actions/go/setup
+
+      - name: Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b /usr/local/bin
+          syft version
+
+      - name: Build cross-compiled binaries
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: make chainguard-build-binaries
+
+      - name: Generate SBOMs
+        run: make chainguard-generate-sbom
+
+      - name: List release artifacts
+        run: ls -lh .chainguard-release/
+
+      - name: Create draft release on chainguard-partners/nirmata
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ secrets.CHAINGUARD_PARTNER_REPO_PAT }}
+        run: make chainguard-github-release
+
+      - name: Publish release (GA tags only — skipped for dirty tags)
+        if: steps.release-type.outputs.is_dirty == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ secrets.CHAINGUARD_PARTNER_REPO_PAT }}
+        run: make chainguard-publish-release
