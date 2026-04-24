@@ -478,6 +478,7 @@ func main() {
 		internal.WithEventsClient(),
 		internal.WithApiServerClient(),
 		internal.WithMetadataClient(),
+		internal.WithAggregatorClient(),
 		internal.WithFlagSets(flagset),
 		internal.WithReporting(),
 		internal.WithRestConfig(),
@@ -835,6 +836,11 @@ func main() {
 				contextProvider,
 			), metrics.AdmissionRequest)
 		}
+		dropBreaker := func() {
+			breaker.SetReportsBreaker(breaker.NewBreaker("admission reports", func(context.Context) bool {
+				return true
+			}))
+		}
 		if admissionReports {
 			ephrCounterFunc := func(c breaker.Counter) func(context.Context) bool {
 				return func(context.Context) bool {
@@ -845,34 +851,26 @@ func main() {
 					return count > maxAdmissionReports
 				}
 			}
-
-			ephrs, err := breaker.StartAdmissionReportsCounter(signalCtx, setup.MetadataClient)
-			if err != nil {
-				go func() {
-					for {
-						ephrs, err := breaker.StartAdmissionReportsCounter(signalCtx, setup.MetadataClient)
-						if err != nil {
-							setup.Logger.Error(err, "failed to start admission reports watcher, retrying...")
-							time.Sleep(2 * time.Second)
-							continue
-						}
-						breaker.SetReportsBreaker(breaker.NewBreaker("admission reports", ephrCounterFunc(ephrs)))
+			// Start with the breaker closed (dropping) until reports-server signals it is ready.
+			dropBreaker()
+			breaker.WatchReportsServerReady(
+				signalCtx,
+				setup.Logger.WithName("reports-server-watcher"),
+				setup.AggregatorClient,
+				func(ctx context.Context) {
+					ephrs, err := breaker.StartAdmissionReportsCounter(ctx, setup.MetadataClient)
+					if err != nil {
+						setup.Logger.Error(err, "failed to start admission reports counter after reports-server became ready")
+						dropBreaker()
 						return
 					}
-				}()
-				// create a temporary fake breaker until the retrying goroutine succeeds
-				breaker.SetReportsBreaker(breaker.NewBreaker("admission reports", func(context.Context) bool {
-					return true
-				}))
-				// no error has occurred, create a normal breaker
-			} else {
-				breaker.SetReportsBreaker(breaker.NewBreaker("admission reports", ephrCounterFunc(ephrs)))
-			}
+					breaker.SetReportsBreaker(breaker.NewBreaker("admission reports", ephrCounterFunc(ephrs)))
+				},
+				dropBreaker,
+			)
 			// admission reports are disabled, create a fake breaker by default
 		} else {
-			breaker.SetReportsBreaker(breaker.NewBreaker("admission reports", func(context.Context) bool {
-				return true
-			}))
+			dropBreaker()
 		}
 
 		resourceHandlers := webhooksresource.NewHandlers(

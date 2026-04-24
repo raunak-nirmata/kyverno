@@ -349,6 +349,7 @@ func main() {
 		internal.WithKyvernoDynamicClient(),
 		internal.WithEventsClient(),
 		internal.WithApiServerClient(),
+		internal.WithAggregatorClient(),
 		internal.WithFlagSets(flagset),
 		internal.WithReporting(),
 		internal.WithOpenreports(),
@@ -463,28 +464,28 @@ func main() {
 				return count > maxBackgroundReports
 			}
 		}
-		ephrs, err := breaker.StartBackgroundReportsCounter(ctx, setup.MetadataClient)
-		if err != nil {
-			go func() {
-				for {
-					ephrs, err := breaker.StartBackgroundReportsCounter(ctx, setup.MetadataClient)
-					if err != nil {
-						setup.Logger.Error(err, "failed to start background scan reports watcher, retrying...")
-						time.Sleep(2 * time.Second)
-						continue
-					}
-					breaker.SetReportsBreaker(breaker.NewBreaker("background scan reports", ephrCounterFunc(ephrs)))
-					return
-				}
-			}()
-			// create a temporary breaker until the retrying goroutine succeeds
+		dropBreaker := func() {
 			breaker.SetReportsBreaker(breaker.NewBreaker("background scan reports", func(context.Context) bool {
 				return true
 			}))
-			// no error occurred, create a normal breaker
-		} else {
-			breaker.SetReportsBreaker(breaker.NewBreaker("background scan reports", ephrCounterFunc(ephrs)))
 		}
+		// Start with the breaker closed (dropping) until reports-server signals it is ready.
+		dropBreaker()
+		breaker.WatchReportsServerReady(
+			ctx,
+			setup.Logger.WithName("reports-server-watcher"),
+			setup.AggregatorClient,
+			func(rctx context.Context) {
+				ephrs, err := breaker.StartBackgroundReportsCounter(rctx, setup.MetadataClient)
+				if err != nil {
+					setup.Logger.Error(err, "failed to start background scan reports counter after reports-server became ready")
+					dropBreaker()
+					return
+				}
+				breaker.SetReportsBreaker(breaker.NewBreaker("background scan reports", ephrCounterFunc(ephrs)))
+			},
+			dropBreaker,
+		)
 
 		typeConverter := patch.NewTypeConverterManager(nil, setup.KubeClient.Discovery().OpenAPIV3())
 		go typeConverter.Run(ctx)

@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/kyverno/kyverno/api/kyverno"
+	"github.com/kyverno/kyverno/pkg/breaker"
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
 	policyreportv1alpha2 "github.com/kyverno/kyverno/api/policyreport/v1alpha2"
 	reportsv1 "github.com/kyverno/kyverno/api/reports/v1"
@@ -915,24 +916,35 @@ func (c *controller) backReconcile(ctx context.Context, logger logr.Logger, _, n
 		}
 		reportutils.SetResults(report, results...)
 		if report.GetResourceVersion() == "" {
-			r, err := reportutils.CreatePermanentReport(ctx, report, c.client, c.orClient)
+			err = breaker.GetReportsBreaker().Do(ctx, func(ctx context.Context) error {
+				r, err := reportutils.CreatePermanentReport(ctx, report, c.client, c.orClient)
+				if err != nil {
+					return err
+				}
+				uuid := r.GetUID()
+				c.cacheMu.Lock()
+				c.reportUUIDToPolicyCache[string(uuid)] = policySet
+				c.cacheMu.Unlock()
+				return nil
+			})
 			if err != nil {
 				return err
 			}
-
-			uuid := r.GetUID()
-			c.cacheMu.Lock()
-			c.reportUUIDToPolicyCache[string(uuid)] = policySet
-			c.cacheMu.Unlock()
 		} else {
-			r, err := updateReport(ctx, report, c.client, c.orClient)
+			err = breaker.GetReportsBreaker().Do(ctx, func(ctx context.Context) error {
+				r, err := updateReport(ctx, report, c.client, c.orClient)
+				if err != nil {
+					return err
+				}
+				uuid := r.GetUID()
+				c.cacheMu.Lock()
+				c.reportUUIDToPolicyCache[string(uuid)] = policySet
+				c.cacheMu.Unlock()
+				return nil
+			})
 			if err != nil {
 				return err
 			}
-			uuid := r.GetUID()
-			c.cacheMu.Lock()
-			c.reportUUIDToPolicyCache[string(uuid)] = policySet
-			c.cacheMu.Unlock()
 		}
 	}
 	return nil

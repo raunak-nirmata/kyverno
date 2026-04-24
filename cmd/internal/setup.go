@@ -11,6 +11,7 @@ import (
 	kubeclient "github.com/kyverno/kyverno/pkg/clients/kube"
 	kyvernoclient "github.com/kyverno/kyverno/pkg/clients/kyverno"
 	metadataclient "github.com/kyverno/kyverno/pkg/clients/metadata"
+	aggregatorclient "k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset"
 	kyvernocfg "github.com/kyverno/kyverno/pkg/config"
 	"github.com/kyverno/kyverno/pkg/engine/jmespath"
 	imageverifycache "github.com/kyverno/kyverno/pkg/image/verification/cache"
@@ -49,6 +50,7 @@ type SetupResult struct {
 	ApiServerClient        apiserverclient.UpstreamInterface
 	MetadataClient         metadataclient.UpstreamInterface
 	KyvernoDynamicClient   dclient.Interface
+	AggregatorClient       aggregatorclient.Interface
 	EventsClient           eventsv1.EventsV1Interface
 	ReportingConfiguration reportutils.ReportingConfiguration
 	ResyncPeriod           time.Duration
@@ -122,6 +124,10 @@ func Setup(config Configuration, name string, skipResourceFilters bool) (context
 		restConfig = createClientConfig(logger, clientRateLimitQPS, clientRateLimitBurst)
 	}
 
+	var aggregatorClient aggregatorclient.Interface
+	if config.UsesAggregatorClient() {
+		aggregatorClient = CreateAggregatorClient(logger)
+	}
 	var orClient openreportsclient.OpenreportsV1alpha1Interface
 	if config.UsesOpenreports() {
 		openreportsEnabled, err := config.GetFlagValue("openreportsEnabled")
@@ -150,6 +156,7 @@ func Setup(config Configuration, name string, skipResourceFilters bool) (context
 			ApiServerClient:        apiServerClient,
 			MetadataClient:         metadataClient,
 			KyvernoDynamicClient:   dClient,
+			AggregatorClient:       aggregatorClient,
 			EventsClient:           eventsClient,
 			ReportingConfiguration: reportingConfig,
 			ResyncPeriod:           resyncPeriod,

@@ -26,6 +26,7 @@ type Configuration interface {
 	UsesReporting() bool
 	UsesRestConfig() bool
 	UsesOpenreports() bool
+	UsesAggregatorClient() bool
 	GetFlagValue(string) (string, error)
 	AddFlagSet(*flag.FlagSet)
 	FlagSets() []*flag.FlagSet
@@ -151,6 +152,12 @@ func WithOpenreports() ConfigurationOption {
 	}
 }
 
+func WithAggregatorClient() ConfigurationOption {
+	return func(c *configuration) {
+		c.usesAggregatorClient = true
+	}
+}
+
 func WithFlagSets(flagsets ...*flag.FlagSet) ConfigurationOption {
 	return func(c *configuration) {
 		c.flagSets = append(c.flagSets, flagsets...)
@@ -190,6 +197,7 @@ type configuration struct {
 	usesOpenreports          bool
 	usesReporting            bool
 	usesRestConfig           bool
+	usesAggregatorClient     bool
 	flagSets                 []*flag.FlagSet
 }
 
@@ -271,6 +279,10 @@ func (c *configuration) UsesReporting() bool {
 
 func (c *configuration) UsesRestConfig() bool {
 	return c.usesRestConfig
+}
+
+func (c *configuration) UsesAggregatorClient() bool {
+	return c.usesAggregatorClient
 }
 
 func (c *configuration) FlagSets() []*flag.FlagSet {

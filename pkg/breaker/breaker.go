@@ -9,11 +9,22 @@ import (
 
 var reportsBreaker atomic.Value
 
+// nopBreaker is a pass-through used when the reports breaker has not been initialized
+// (e.g., in tests or standalone runs). It always executes the inner function.
+type nopBreaker struct{}
+
+func (nopBreaker) Do(ctx context.Context, inner func(context.Context) error) error {
+	if inner == nil {
+		return nil
+	}
+	return inner(ctx)
+}
+
 func GetReportsBreaker() Breaker {
 	if v := reportsBreaker.Load(); v != nil {
 		return v.(Breaker)
 	}
-	return nil
+	return nopBreaker{}
 }
 
 func SetReportsBreaker(b Breaker) {

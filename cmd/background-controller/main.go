@@ -170,6 +170,7 @@ func main() {
 		internal.WithEventsClient(),
 		internal.WithApiServerClient(),
 		internal.WithMetadataClient(),
+		internal.WithAggregatorClient(),
 		internal.WithFlagSets(flagset),
 		internal.WithReporting(),
 		internal.WithRestConfig(),
@@ -268,28 +269,28 @@ func main() {
 				return count > maxBackgroundReports
 			}
 		}
-		ephrs, err := breaker.StartAdmissionReportsCounter(signalCtx, setup.MetadataClient)
-		if err != nil {
-			go func() {
-				for {
-					ephrs, err := breaker.StartAdmissionReportsCounter(signalCtx, setup.MetadataClient)
-					if err != nil {
-						setup.Logger.Error(err, "failed to start background scan reports watcher, retrying...")
-						time.Sleep(2 * time.Second)
-						continue
-					}
-					breaker.SetReportsBreaker(breaker.NewBreaker("background-scan reports", ephrCounterFunc(ephrs)))
-					return
-				}
-			}()
-			// temporarily create a fake breaker until the retrying goroutine succeeds
+		dropBreaker := func() {
 			breaker.SetReportsBreaker(breaker.NewBreaker("background-scan reports", func(context.Context) bool {
 				return true
 			}))
-			// no error occurred, create a normal breaker
-		} else {
-			breaker.SetReportsBreaker(breaker.NewBreaker("background-scan reports", ephrCounterFunc(ephrs)))
 		}
+		// Start with the breaker closed (dropping) until reports-server signals it is ready.
+		dropBreaker()
+		breaker.WatchReportsServerReady(
+			signalCtx,
+			setup.Logger.WithName("reports-server-watcher"),
+			setup.AggregatorClient,
+			func(ctx context.Context) {
+				ephrs, err := breaker.StartAdmissionReportsCounter(ctx, setup.MetadataClient)
+				if err != nil {
+					setup.Logger.Error(err, "failed to start background scan reports counter after reports-server became ready")
+					dropBreaker()
+					return
+				}
+				breaker.SetReportsBreaker(breaker.NewBreaker("background-scan reports", ephrCounterFunc(ephrs)))
+			},
+			dropBreaker,
+		)
 		// start informers and wait for cache sync
 		if !internal.StartInformersAndWaitForCacheSync(signalCtx, setup.Logger, kyvernoInformer) {
 			setup.Logger.Error(errors.New("failed to wait for cache sync"), "failed to wait for cache sync")
