@@ -2,7 +2,8 @@
 
 name: CLI
 
-permissions: {}
+permissions:
+  contents: read
 
 on:
   pull_request:
@@ -54,6 +55,7 @@ jobs:
     needs:
       - check
     permissions:
+      contents: read
       issues: write
     runs-on: ubuntu-slim
     steps:

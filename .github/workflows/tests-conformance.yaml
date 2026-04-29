@@ -2,7 +2,8 @@
 
 name: Conformance tests
 
-permissions: {}
+permissions:
+  contents: read
 
 on:
   workflow_call: {}
@@ -737,6 +738,7 @@ jobs:
   verify-images:
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       packages: read
     strategy:
       fail-fast: false

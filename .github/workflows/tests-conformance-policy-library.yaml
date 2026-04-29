@@ -2,7 +2,8 @@
 
 name: Conformance tests (policy library)
 
-permissions: {}
+permissions:
+  contents: read
 
 on:
   workflow_call: {}
