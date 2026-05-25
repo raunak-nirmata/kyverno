@@ -13,28 +13,15 @@ on:
   workflow_dispatch:
 
 jobs:
-  generate-token:
-    runs-on: ubuntu-latest
-    outputs:
-      token: ${{ steps.generate-token.outputs.token }}
-    steps:
-      - name: Generate token
-        id: generate-token
-        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
-        with:
-          app-id: ${{ secrets.NIRMATA_INTERNAL_APP_ID }}
-          private-key: ${{ secrets.NIRMATA_INTERNAL_PRIVATE_KEY }}
-
   resolve-target-branch:
     runs-on: ubuntu-latest
-    needs: generate-token
     outputs:
       target-branch: ${{ steps.resolve.outputs.target-branch }}
     steps:
       - name: Resolve target branch name
         id: resolve
         env:
-          GH_TOKEN: ${{ needs.generate-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           CURRENT_BRANCH="${{ github.ref_name }}"
 
@@ -59,8 +46,8 @@ jobs:
           fi
 
   sync-chart:
-    needs: [generate-token, resolve-target-branch]
-    uses: nirmata/reusable-workflows/.github/workflows/chart-sync.yml@38eef6f8959df1ab74ec6b0259ffa57f63dac557 # main
+    needs: [resolve-target-branch]
+    uses: nirmata/reusable-workflows/.github/workflows/chart-sync.yml@e50d9baf64fa4397c510695ea920b90cdcbcd91e # main
     with:
       source-repo: nirmata/enterprise-kyverno
       chart-path: charts/kyverno
@@ -68,4 +55,5 @@ jobs:
       source-branch-name: ${{ github.ref_name }}
       target-branch-name: ${{ needs.resolve-target-branch.outputs.target-branch }}
     secrets:
-      GH_TOKEN: ${{ needs.generate-token.outputs.token }}
+      NIRMATA_INTERNAL_APP_ID: ${{ secrets.NIRMATA_INTERNAL_APP_ID }}
+      NIRMATA_INTERNAL_PRIVATE_KEY: ${{ secrets.NIRMATA_INTERNAL_PRIVATE_KEY }}

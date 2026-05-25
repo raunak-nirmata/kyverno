@@ -109,6 +109,19 @@ spec:
             name: profiling-port
             protocol: TCP
           {{- end }}
+          {{- if not .Values.reportsController.metering.disabled }}
+          livenessProbe:
+            tcpSocket:
+              port: {{ .Values.reportsController.metering.port }}
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: {{ .Values.reportsController.metering.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          {{- end }}
           args:
             {{- if .Values.reportsController.tracing.enabled }}
             - --enableTracing
