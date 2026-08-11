@@ -148,6 +148,8 @@ var (
 	kyvernoMetricsConfigMapName = osutils.GetEnvWithFallback("METRICS_CONFIG", "kyverno-metrics")
 	// kyvernoDryRunNamespace is the namespace for DryRun option of YAML verification
 	kyvernoDryrunNamespace = osutils.GetEnvWithFallback("KYVERNO_DRYRUN_NAMESPACE", "kyverno-dryrun")
+	// kyvernoLicenseStateConfigMapName is the Nirmata license state configmap name
+	kyvernoLicenseStateConfigMapName = osutils.GetEnvWithFallback("LICENSE_STATE_CONFIG", "kyverno-license-state")
 )
 
 func KyvernoDisableWebhookConfigMapName() string {
@@ -188,6 +190,13 @@ func KyvernoConfigMapName() string {
 
 func KyvernoMetricsConfigMapName() string {
 	return kyvernoMetricsConfigMapName
+}
+
+// KyvernoLicenseStateConfigMapName is the ConfigMap holding Nirmata license
+// trial and grace bookkeeping. It is provisioned by the Helm chart and written
+// by the leader-elected admission controller.
+func KyvernoLicenseStateConfigMapName() string {
+	return kyvernoLicenseStateConfigMapName
 }
 
 func KyvernoDisableWebhookConfigMapKey() string {

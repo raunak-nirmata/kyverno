@@ -7,6 +7,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/kyverno/kyverno/pkg/leaderelection"
 	"github.com/kyverno/kyverno/pkg/logging"
+	"github.com/kyverno/kyverno/pkg/nirmata/license"
 	"github.com/kyverno/kyverno/pkg/toggle"
 	"github.com/sigstore/sigstore/pkg/tuf"
 )
@@ -60,6 +61,8 @@ var (
 	registryCredentialHelpers string
 	// leader election
 	leaderElectionRetryPeriod time.Duration
+	// nirmata licensing
+	licenseEvaluationInterval time.Duration
 	// cleanupServer port and host for listening address
 	cleanupServerHost string
 	cleanupServerPort int
@@ -170,6 +173,22 @@ func initLeaderElectionFlags() {
 	flag.DurationVar(&leaderElectionRetryPeriod, "leaderElectionRetryPeriod", leaderelection.DefaultRetryPeriod, "Configure leader election retry period.")
 }
 
+// initNirmataLicensingFlags registers the Nirmata licensing flags.
+//
+// There is no flag to enable or disable licensing: it is always on. Only the
+// evaluation cadence is adjustable, and it is clamped at both ends so it cannot
+// be set so long that reporting is effectively switched off.
+//
+// Registered for every component rather than only the admission controller,
+// because operators commonly set flags through a shared Helm extraArgs block and a
+// flag present on only one binary would make the others exit on an unknown flag.
+// The component gate lives in setupLicense instead.
+func initNirmataLicensingFlags() {
+	flag.DurationVar(&licenseEvaluationInterval, "licenseEvaluationInterval", license.DefaultInterval,
+		"Interval at which Nirmata license state is evaluated. Clamped to between "+
+			license.MinInterval.String()+" and "+license.MaxInterval.String()+".")
+}
+
 func initCleanupFlags() {
 	flag.StringVar(&cleanupServerHost, "cleanupServerHost", "", "Host used by the cleanup server. If not set, it will default to [::] for IPv6 or 0.0.0.0 for IPv4.")
 	flag.IntVar(&cleanupServerPort, "cleanupServerPort", 9443, "kyverno cleanup server port, defaults to '9443'.")
@@ -233,6 +252,8 @@ func initFlags(config Configuration, opts ...Option) {
 	initLoggingFlags()
 	// memlimit
 	initMemLimitFlags()
+	// nirmata licensing
+	initNirmataLicensingFlags()
 	// profiling
 	if config.UsesProfiling() {
 		initProfilingFlags()

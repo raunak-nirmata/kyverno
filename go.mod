@@ -40,6 +40,7 @@ require (
 	github.com/kyverno/playground/backend v0.0.0-20251124111549-b7997c02bca2
 	github.com/kyverno/sdk v0.0.0-20260403020150-29a100fa834c
 	github.com/lensesio/tableprinter v0.0.0-20201125135848-89e81fc956e7
+	github.com/nirmata/license-guardian v0.0.19
 	github.com/notaryproject/notation-core-go v1.3.0
 	github.com/notaryproject/notation-go v1.3.2
 	github.com/onsi/ginkgo v1.16.5

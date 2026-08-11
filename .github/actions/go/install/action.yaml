@@ -23,6 +23,19 @@ runs:
       with:
         go-version-file: ${{ inputs.go-version-file }}
         cache: false
+    # Private Nirmata modules are fetched over git rather than the public proxy, so
+    # git needs a credential. Callers set GOPRIVATE/GH_DEP_USERNAME/GH_DEP_PAT as
+    # workflow-level env; done here rather than per job so a new job cannot forget it.
+    # A no-op when GH_DEP_PAT is unset.
+    - name: Configure private Go module access
+      shell: bash
+      run: |
+        set -e
+        if [ -n "${GH_DEP_PAT:-}" ]; then
+          # Scoped to the nirmata org so the credential is never sent on
+          # unrelated github.com module fetches.
+          git config --global url."https://${GH_DEP_USERNAME}:${GH_DEP_PAT}@github.com/nirmata/".insteadOf "https://github.com/nirmata/"
+        fi
     - id: variables
       shell: bash
       run: |

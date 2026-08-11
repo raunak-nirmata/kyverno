@@ -10,6 +10,13 @@ on:
     tags:
     - v*
 
+env:
+  # Credentials for the private Nirmata Go modules (license-guardian). Consumed by
+  # .github/actions/go/install. DEPLOYMENT_* are organisation secrets.
+  GOPRIVATE: github.com/nirmata
+  GH_DEP_USERNAME: ${{ secrets.DEPLOYMENT_USERNAME }}
+  GH_DEP_PAT: ${{ secrets.DEPLOYMENT_PAT }}
+
 jobs:
   release-kyverno:
     permissions:
@@ -26,6 +33,7 @@ jobs:
     secrets:
       registry_username: ${{ github.actor }}
       registry_password: ${{ secrets.CR_PAT }}
+      deployment_pat: ${{ secrets.DEPLOYMENT_PAT }}
   release-init-container-fips:
     permissions:
       contents: read
@@ -41,6 +49,7 @@ jobs:
     secrets:
       registry_username: ${{ github.actor }}
       registry_password: ${{ secrets.CR_PAT }}
+      deployment_pat: ${{ secrets.DEPLOYMENT_PAT }}
   release-kyverno-cli-fips:
     permissions:
       contents: read
@@ -56,6 +65,7 @@ jobs:
     secrets:
       registry_username: ${{ github.actor }}
       registry_password: ${{ secrets.CR_PAT }}
+      deployment_pat: ${{ secrets.DEPLOYMENT_PAT }}
   release-cleanup-controller-fips:
     permissions:
       contents: read
@@ -71,6 +81,7 @@ jobs:
     secrets:
       registry_username: ${{ github.actor }}
       registry_password: ${{ secrets.CR_PAT }}
+      deployment_pat: ${{ secrets.DEPLOYMENT_PAT }}
   release-background-controller-fips:
     permissions:
       contents: read
@@ -86,6 +97,7 @@ jobs:
     secrets:
       registry_username: ${{ github.actor }}
       registry_password: ${{ secrets.CR_PAT }}
+      deployment_pat: ${{ secrets.DEPLOYMENT_PAT }}
   release-reports-controller-fips:
     permissions:
       contents: read
@@ -101,6 +113,7 @@ jobs:
     secrets:
       registry_username: ${{ github.actor }}
       registry_password: ${{ secrets.CR_PAT }}
+      deployment_pat: ${{ secrets.DEPLOYMENT_PAT }}
   release-images:
     runs-on: xr1
     permissions:
