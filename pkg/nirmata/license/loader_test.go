@@ -3,6 +3,7 @@ package license
 import (
 	"crypto/ed25519"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -236,7 +237,7 @@ func TestTrustRootMissingIsReportedDistinctly(t *testing.T) {
 		t.Skip("build is fully provisioned; nothing to report as missing")
 	}
 
-	_, err := LoadActive(base)
+	_, err := LoadActive(base, "")
 	if err == nil {
 		t.Fatal("an unprovisioned build must not report a usable license")
 	}
@@ -280,7 +281,7 @@ func TestLoadActiveWithEmbeddedLicense(t *testing.T) {
 		t.Skip("no license artifact embedded in this build yet")
 	}
 
-	active, err := LoadActive(base)
+	active, err := LoadActive(base, "")
 	if err != nil {
 		t.Fatalf("the embedded license does not verify against the embedded public key: %v\n"+
 			"the two were probably produced from different key pairs", err)
@@ -316,4 +317,179 @@ func TestLoadActiveWithEmbeddedLicense(t *testing.T) {
 
 	t.Logf("embedded license OK: customer=%q policies=%s nodeUnits=%s trial=%v",
 		active.Claims.Customer, active.Limits.Policies, active.Limits.NodeUnits, active.Limits.Trial)
+}
+
+func signCommercial(t *testing.T, mutate func(*nctllicense.Claims)) (string, ed25519.PublicKey) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := nctllicense.Claims{
+		Customer:     "Acme Corp",
+		NotBefore:    "2020-01-01T00:00:00Z",
+		NotAfter:     base.Add(days(365)).Format(time.RFC3339),
+		LicenseType:  "commercial",
+		Entitlements: []string{"n4k.policies"},
+		MaxPolicies:  intPtr(100),
+		MaxNodeUnits: intPtr(50),
+		GraceDays:    intPtr(30),
+	}
+	if mutate != nil {
+		mutate(&claims)
+	}
+	body, err := nctllicense.EncodeSignedFile(claims, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body), pub
+}
+
+func TestLoadFileCommercial(t *testing.T) {
+	t.Parallel()
+
+	body, pub := signCommercial(t, nil)
+	dir := t.TempDir()
+	path := dir + "/license"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	active, ok, err := loadFile(path, pub, base)
+	if err != nil || !ok {
+		t.Fatalf("loadFile: ok=%v err=%v", ok, err)
+	}
+	if !active.Commercial || active.Origin != OriginFile {
+		t.Errorf("Commercial=%v Origin=%q, want commercial file", active.Commercial, active.Origin)
+	}
+	if active.Limits.Policies != Bound(100) {
+		t.Errorf("Policies = %+v, want 100", active.Limits.Policies)
+	}
+}
+
+func TestLoadFileMissingIsNotAnError(t *testing.T) {
+	t.Parallel()
+
+	_, pub := signCommercial(t, nil)
+	_, ok, err := loadFile(t.TempDir()+"/nope", pub, base)
+	if ok || err != nil {
+		t.Fatalf("missing file must be ok=false err=nil, got ok=%v err=%v", ok, err)
+	}
+}
+
+func TestLoadFileCorrupt(t *testing.T) {
+	t.Parallel()
+
+	_, pub := signCommercial(t, nil)
+	path := t.TempDir() + "/license"
+	if err := os.WriteFile(path, []byte("not-a-license"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, ok, err := loadFile(path, pub, base)
+	if ok || err == nil {
+		t.Fatal("corrupt file must fail")
+	}
+	if !errors.Is(err, errLicenseFileInvalid) {
+		t.Errorf("err = %v, want errLicenseFileInvalid", err)
+	}
+}
+
+func TestLoadActiveMissingFileFallsBackToFreeTier(t *testing.T) {
+	t.Parallel()
+
+	if EmbeddedN4KCommunityLicense == "" {
+		t.Skip("community license not embedded")
+	}
+	active, err := LoadActive(base, t.TempDir()+"/gone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !active.FileMissing {
+		t.Error("FileMissing must be true when licensePath is set but the file is gone")
+	}
+	if active.Commercial || active.Invalid {
+		t.Errorf("missing file must fall back to community, Commercial=%v Invalid=%v", active.Commercial, active.Invalid)
+	}
+	if active.Origin != OriginCommunity {
+		t.Errorf("Origin = %q, want community", active.Origin)
+	}
+}
+
+func TestLoadFileEmptyIsMissingNotInvalid(t *testing.T) {
+	t.Parallel()
+
+	_, pub := signCommercial(t, nil)
+	path := t.TempDir() + "/license"
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, ok, err := loadFile(path, pub, base)
+	if ok || err != nil {
+		t.Fatalf("empty file must be treated as missing (ok=false err=nil), got ok=%v err=%v", ok, err)
+	}
+}
+
+func TestLoadActivePrefersFile(t *testing.T) {
+	t.Parallel()
+
+	if EmbeddedN4KLicensePublicKeyPEM == "" {
+		t.Skip("N4K public key not provisioned")
+	}
+	pub, err := n4kPublicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sign with the real N4K key — we can't without the private key. Instead
+	// exercise loadFile preference via LoadActive with a missing path (falls
+	// through) and with an invalid path (Invalid=true).
+	path := t.TempDir() + "/license"
+	if err := os.WriteFile(path, []byte("garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = pub
+	active, err := LoadActive(base, path)
+	if err != nil {
+		// Unprovisioned community is fine to skip.
+		if errors.Is(err, errCommunityLicenseMissing) {
+			t.Skip("community license not embedded")
+		}
+		t.Fatal(err)
+	}
+	if !active.Invalid {
+		t.Error("a garbage license file must set Invalid")
+	}
+	if active.Origin != OriginFile {
+		t.Errorf("Origin = %q, want file", active.Origin)
+	}
+	if active.FileMissing {
+		t.Error("corrupt content is Invalid, not FileMissing")
+	}
+}
+
+func TestLoadFileExpiredCommercialStillLoads(t *testing.T) {
+	t.Parallel()
+
+	body, pub := signCommercial(t, func(c *nctllicense.Claims) {
+		c.NotAfter = base.Add(-days(1)).Format(time.RFC3339)
+	})
+	path := t.TempDir() + "/license"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	active, ok, err := loadFile(path, pub, base)
+	if err != nil || !ok {
+		t.Fatalf("expired commercial must still load for Grace, ok=%v err=%v", ok, err)
+	}
+	if !active.Commercial {
+		t.Error("expired commercial must still report Commercial=true")
+	}
+	snap := Evaluate(Inputs{
+		Now:        base,
+		Commercial: active.Commercial,
+		NotAfter:   active.NotAfter,
+		Limits:     active.Limits,
+	})
+	if snap.State != Grace {
+		t.Errorf("State = %q, want Grace for expired commercial on first detection", snap.State)
+	}
 }

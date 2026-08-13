@@ -45,6 +45,7 @@ type TlsProvider func() ([]byte, []byte, error)
 func NewServer(
 	ctx context.Context,
 	policyHandlers PolicyHandlers,
+	licenseHandlers LicenseHandlers,
 	resourceHandlers ResourceHandlers,
 	exceptionHandlers ExceptionHandlers,
 	celExceptionHandlers CELExceptionHandlers,
@@ -66,6 +67,7 @@ func NewServer(
 	mux := httprouter.New()
 	resourceLogger := logger.WithName("resource")
 	policyLogger := logger.WithName("policy")
+	licenseLogger := logger.WithName("license")
 	exceptionLogger := logger.WithName("exception")
 	celExceptionLogger := logger.WithName("cel-exception")
 	globalContextLogger := logger.WithName("globalcontext")
@@ -229,6 +231,16 @@ func NewServer(
 			WithSubResourceFilter().
 			WithMetrics(policyLogger, metrics.WebhookValidating).
 			WithAdmission(policyLogger.WithName("validate")).
+			ToHandlerFunc("VALIDATE"),
+	)
+	mux.HandlerFunc(
+		"POST",
+		config.LicenseValidatingWebhookServicePath,
+		handlerFunc("VALIDATE", licenseHandlers.Validation, "").
+			WithDump(debugModeOpts.DumpPayload).
+			WithSubResourceFilter().
+			WithMetrics(licenseLogger, metrics.WebhookValidating).
+			WithAdmission(licenseLogger.WithName("validate")).
 			ToHandlerFunc("VALIDATE"),
 	)
 	mux.HandlerFunc(

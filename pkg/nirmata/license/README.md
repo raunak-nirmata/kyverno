@@ -1,157 +1,141 @@
-# N4K Licensing — Phase 1
+# N4K Licensing — Phase 2
 
-License evaluation and reporting for Nirmata Enterprise Kyverno.
+License evaluation and **graduated enforcement** for Nirmata Enterprise Kyverno.
 
-**Phase 1 is observability only.** Nothing here refuses an admission request,
-disables a policy, or stops a controller. It observes the cluster, resolves the
-limits the active license grants, computes a state, and reports it through logs,
-Kubernetes events and metrics. The point of this phase is to prove the evaluation
-engine is harmless in production before it is given any teeth.
+Phase 2 keeps the Phase 1 evaluation engine and adds commercial license loading,
+persisted grace bookkeeping, and a **safe** capacity gate: refuse CREATE of a new
+policy that would exceed the licensed policy cap when the cluster is in
+`FreeTier`, `FreeExpired`, or `Degraded`. Core workload admission
+(validate / mutate / generate) is never gated. Feature-tier gating via
+`pkg/toggle` is deferred.
+
+## Principles
+
+- **Fail-open on the hot path, fail-loud everywhere else.** License problems never
+  crash the admission controller and never disable already-enforced policies.
+- **Grace clock starts at first detection** of paid non-compliance and is
+  persisted in the leader-managed license-state ConfigMap (`graceStartedAt`). It is
+  cleared only after `graceClearAfter` of sustained compliance, so a cluster
+  flapping around its node-unit entitlement cannot restart the window indefinitely.
+- **Checksum, not tamper protection,** on that ConfigMap. The `hmac` key is keyed
+  from the namespace name unless `N4K_LICENSE_STATE_HMAC_SEED` is set, and the
+  namespace is public — anyone who can edit the ConfigMap can recompute a matching
+  value. It catches partial writes and hand edits, nothing more, and a mismatch is
+  logged and counted while the timestamps stay usable. Restart-safety comes from
+  `writeClock` never overwriting `firstSeen`, not from this. Deleting the
+  ConfigMap can still reset a trial — accepted risk.
+- **No kill switch.** Licensing cannot be disabled by flag or Helm value. The
+  capacity gate is also excluded from `validationWebhooks`, so listing it in the
+  disable-webhook ConfigMap does not delete it — the controller reconciles it back.
+  See `TestLicenseWebhookIsNotOperatorDisableable`.
+
+## States
+
+| State | Condition | Behavior |
+|---|---|---|
+| FreeTier | No commercial license, inside trial | Full function up to policy cap; CREATE at/over cap refused |
+| FreeExpired | No commercial license, trial elapsed | Skips paid grace; CREATE at/over cap refused; loud warnings |
+| Licensed | Valid commercial, in window, under 90% capacity | Full function |
+| Warning | Valid commercial; nearing `not_after` or 90–100% of cap | Full function; warnings |
+| Grace | Paid non-compliance within grace from first detection | Full function preserved |
+| Degraded | Paid non-compliance past grace | CREATE at/over policy cap refused |
 
 ## Layout
 
 | File | Purpose |
 |---|---|
-| `state.go` | `State`, `Inputs`, `Snapshot`, pure `Evaluate`. Read first — this is the semantics. No I/O, no clock, no clients. |
-| `limits.go`, `claims.go` | `Cap` (bounded vs unlimited), `Limits`, and the mapping from signed claims. |
-| `loader.go` | Resolves the active license. Phase 1 has one source. |
-| `community_license.go`, `public_key.go` | The signed free-tier license (generated) and the trust root it verifies against. |
-| `policycount.go`, `nodecount.go` | Policy count across 12 kinds; node units as `ceil(memGiB / 33)`. |
-| `clock.go` | Trial/grace bookkeeping in a ConfigMap. |
-| `metrics.go`, `events.go` | Reporting surfaces. |
-| `license.go` | `Start`, the loop, the anti-escalation guard, leader detection. |
+| `state.go` | `State`, `Inputs`, `Snapshot`, pure `Evaluate` |
+| `limits.go`, `claims.go` | Caps and claim → limit mapping |
+| `loader.go` | File-first commercial load, community fallback |
+| `admit.go` | `AdmitPolicyCreate` safe gate, live `PolicyCounter` hook |
+| `policycount.go` | Counted kinds (`policyResources`) and the periodic count |
+| `clock.go` | Trial/grace ConfigMap + integrity checksum |
+| `metrics.go`, `events.go` | Reporting surfaces |
+| `license.go` | `Start`, loop, anti-escalation, leader detection |
+
+## The capacity gate
+
+`AdmitPolicyCreate` is served by its own webhook,
+`kyverno-license-validating-webhook-cfg` (`pkg/webhooks/license`), on CREATE only
+and with `failurePolicy: Ignore`. It is deliberately separate from the policy
+validating webhook: the cap counts kinds — `mutatingpolicies`,
+`namespacedmutatingpolicies`, `namespaceddeletingpolicies` — whose content Kyverno
+does not validate at admission, and a counted-but-ungated kind could be created
+without limit while still consuming other kinds' capacity.
+
+The gate enforces against a **live** count from the informer caches
+(`license.SetPolicyCounter`, wired in `cmd/kyverno/licensecount.go`), not the
+snapshot count, which is only as fresh as the evaluation interval. When the caches
+have not synced the counter reports `ok=false` and the gate falls back to the last
+evaluated count rather than admitting on a zero.
+
+Those informers live on their own factory, excluded from the startup cache-sync
+barriers in `main.go` (which `os.Exit(1)` on failure). An informer for an absent
+CRD never syncs, so sharing the barrier would let a missing policy CRD stop
+admission from starting — licensing must never be why admission is down.
+
+The cap is a **capacity control, not an atomic quota.** Admission reads a count the
+informer cache has yet to catch up with, so `AdmitPolicyCreate` also counts the
+CREATEs this process admitted but has not yet observed (`inFlight`). That closes
+the ordinary `kubectl apply -f dir/` burst, where five creates at 8 of 10 would
+otherwise all be admitted before the first lands. It is not a distributed
+semaphore: replicas count separately, so a burst spread across replicas can still
+overshoot briefly, after which the next evaluation reports the overrun and further
+CREATEs are refused. Reserving capacity per request would put coordination, and a
+new failure mode, on a path whose first duty is to stay open.
+
+## Validity window
+
+The commercial path does not call `ClaimsValidNow`: an expired license must still
+reach `Evaluate` so Grace and Degraded can run, rather than being rejected at load.
+`not_before` is therefore carried separately (`Active.NotBefore`) and ruled on by
+`Evaluate`, which treats a window that has not opened yet as paid non-compliance —
+the same ladder as expiry. Without that, a correctly signed license dated a year
+out would evaluate as `Licensed` and grant full capacity today.
+
+`licensedPolicyRules` in `pkg/controllers/webhook/controller.go` and
+`policyResources` here must describe the same kinds;
+`TestLicenseWebhookCoversCountedKinds` fails if they drift.
+
+## Commercial license
+
+Nirmata issues a signed license file. The customer mounts it via Helm:
+
+```yaml
+license:
+  create: true
+  value: |
+    nctl-license-v1
+    ...
+```
+
+or points at an existing Secret with `license.existingSecret`. The chart mounts
+it into the admission controller at `/var/run/kyverno/license/license` (**optional**
+volume) and passes `--licensePath`. Offline verification uses N4K’s Ed25519 trust
+root in `public_key.go` (not nctl’s).
+
+If the Secret is deleted, pods keep running: the mount stays optional, the
+evaluator sees a missing file, sets `FileMissing`, and falls back to the embedded
+community license → **FreeTier** or **FreeExpired** from the trial ConfigMap.
+Workload admission is unaffected; only the policy-CREATE cap gate applies again.
 
 ## Where the limits come from
 
-Free-tier limits are not hardcoded. They travel in an embedded Ed25519-signed
-community license, so changing the free tier is a re-issued license rather than a
-code release. `n4k-community-config.yaml` in `nirmata/license-gen` is the source of
-record; the `generate-n4k-community-license` workflow signs it and opens a PR
-replacing `community_license.go`.
-
-The community license carries a `2099` sentinel expiry and **never expires**. The
-per-install 15-day window is anchored cluster-side in the license-state ConfigMap,
-because a signed license has exactly one date and cannot express "fifteen days from
-whenever this cluster was installed".
-
-## There is no way to turn it off
-
-Licensing has no flag, environment variable or Helm value to disable it. A
-customer-settable kill switch would be a trivial bypass the moment a later phase
-enforces anything, so it does not exist rather than existing and being trusted.
-
-The only knob is cadence, clamped at both ends so it cannot be set long enough to
-switch reporting off in practice:
-
-```yaml
-features:
-  licensing:
-    evaluationInterval: 5m   # optional; clamped to 1m..1h, defaults to 15m
-```
-
-Consequences:
-
-- **There is no emergency lever.** If the evaluator misbehaves in a customer
-  cluster, support cannot disable it without a patch release or chart rollback.
-  Mitigated by construction, not configuration: the loop refuses nothing, recovers
-  from panics at two levels, and every failure path is fail-open.
-- **Node-read RBAC is granted to every install**, since node units come from node
-  memory. Cluster-wide read of nodes only, in its own aggregated ClusterRole
-  (`...:licensing`) so it is easy to audit.
-- `Start` is a no-op for the non-authoritative components; only the admission
-  controller evaluates.
+Free-tier limits travel in the embedded Ed25519-signed community license.
+Windows (`trial_days`, `grace_days`) and caps come from claims, with package
+defaults when absent (`DefaultTrialDays`, `DefaultGraceDays`, `DefaultWarnDays`).
+The 90% capacity warning band is `DefaultWarnRatio`.
 
 ## Provisioning and the signing key
 
-N4K verifies against **its own** Ed25519 trust root, not nctl's, so the two products
-cannot forge or invalidate each other's licenses and rotate independently. The
-private half exists only as the `N4K_LICENSE_PRIVATE_KEY` secret in
-`nirmata/license-gen`; the public half in `public_key.go` is not secret and ships in
-every binary, which is what makes offline verification work.
-
-Two rules that do not change:
-
-- **Order.** The public key must be committed and shipped *before* the first license
-  is signed with its private counterpart. A license signed against a key the binary
-  does not carry fails verification, and reports as a *corrupt* artifact rather than
-  a missing one — a confusing symptom for a simple cause.
-- **Rotation invalidates every issued license.** Replacing the public key means
-  re-issuing to every customer, and the new key must reach clusters via an upgrade
-  *before* the new licenses do. Whoever holds the private half needs an offline
-  backup: losing it means every shipped binary trusts a key nobody can sign with.
-
-To generate a pair (somewhere the private half will not persist):
-
-```bash
-openssl genpkey -algorithm ed25519 -out n4k-license-private.pem
-openssl pkey -in n4k-license-private.pem -pubout -out n4k-license-public.pem
-gh secret set N4K_LICENSE_PRIVATE_KEY --repo nirmata/license-gen < n4k-license-private.pem
-```
-
-Then commit the public half (with PEM armour) and shred the private file.
-
-## Unprovisioned versus corrupt
-
-While `EmbeddedN4KCommunityLicense` is empty, `LoadActive` returns
-`errCommunityLicenseMissing` and the evaluator reports nothing. It deliberately does
-**not** fall back to hardcoded limits — a build missing its artifact should be
-visible, not quietly indistinguishable from a provisioned one.
-
-| Situation | Reported as |
-|---|---|
-| Constant empty — no artifact in this build | `V(2)` info, once per process, plus `..._evaluation_errors{stage="unprovisioned"}`. Expected while the pipeline is stood up; nothing an operator can act on. |
-| Constant present but fails to verify | `Error`, once per cause, plus `..._evaluation_errors{stage="load"}`. A real defect. |
-
-For local testing, `hack/embed-n4k-license.sh` embeds a locally signed license, and
-`--restore` puts the placeholder back. Not a bypass — the license must still verify
-against `public_key.go`. Always restore before committing: a dev-signed license on a
-release branch would define the free tier with a key Nirmata does not control.
+Unchanged from Phase 1: see the trust-root section in git history / ops docs.
+Order matters: ship the public key before signing licenses against it.
 
 ## Module access
 
-This package imports the private module
-`github.com/nirmata/license-guardian/pkg/nctllicense`, so CI needs a credential;
-`secrets.GITHUB_TOKEN` is repository-scoped and insufficient.
-
-`.github/actions/go/install` takes `nirmata-app-id`/`nirmata-app-private-key` inputs
-and mints a short-lived token scoped to `license-guardian` (the `nirmata-internal`
-App already has read access). `go/setup` threads them through, and callers pass
-`secrets.NIRMATA_INTERNAL_APP_ID`/`_PRIVATE_KEY`. `reuse.yaml` does the same for the
-FIPS image builds, exporting `NIRMATA_MODULE_TOKEN` so the Makefile can forward it to
-BuildKit as a build secret — never a build arg, so it is not recoverable from a
-published layer.
-
-Secrets are unavailable to `pull_request` runs from a fork, which would therefore
-fail at `go mod download`.
-
-For local work against an unreleased SDK change, use a Go workspace (`go work init
-. && go work use ../license-guardian`). `go.work` is gitignored and must never be
-committed — an absolute local path breaks every CI job and container build.
-
-## Clock handling, and what it does not promise
-
-The trial is wall-clock based, anchored on `firstSeen`, so it is sensitive to a wrong
-system clock. Two guards, both fail-open:
-
-- **Backward skew** beyond `skewTolerance` measures against the stored `lastSeen`
-  instead of the current clock. This *freezes* the trial where it had reached rather
-  than expiring it: `lastSeen` only ever advances from the clamped value, so the two
-  form a fixed point. The guard stops a rollback handing trial time back; it is not a
-  claim that a trial cannot be extended.
-- **A `lastSeen` implausibly far in the future** (beyond `forwardTrustHorizon`) is
-  discarded and re-anchored. Without this the guards form a trap: a pod starting with
-  a badly wrong future clock — resumed VM snapshot, dead RTC, container running before
-  NTP settles — writes that time on its first tick, and every later tick clamps
-  forward to it, reporting `FreeExpired` permanently.
-
-That healing costs the ability to tell a very large deliberate rollback from a
-corrupt stored value, so such a rollback restarts the trial. Intentional: fail-open
-is a requirement and resisting tampering is not, so a misprovisioned cluster
-recovering matters more than an operator being unable to game a capped free tier.
-
-The ConfigMap is plain text and unsigned, so deleting it grants a fresh trial. An
-accepted risk — the 10-policy cap is the real control, and signing would mean
-shipping a key and owning its rotation.
+This package imports `github.com/nirmata/license-guardian/pkg/nctllicense`.
+CI needs the Nirmata internal App credentials; see Phase 1 notes in the PR that
+introduced the dependency.
 
 ## Testing
 
@@ -159,43 +143,9 @@ shipping a key and owning its rotation.
 go test ./pkg/nirmata/license/...
 ```
 
-The state machine is exhaustively table-tested, including a totality test. Everything
-touching Kubernetes uses fake clientsets. Time is always injected — nothing calls
-`time.Now()` outside `Options.clock()`.
+Important contracts:
 
-Tests that encode decisions rather than mechanics:
-
-- `TestOverLimitIsReportedButDoesNotChangeState` — the Phase 1 contract. If this
-  fails, someone has given Phase 1 teeth by accident.
-- `TestEventsReachTheDeployment` — `pkg/event` silently drops events with an empty
-  `Regarding.Name`, events regarding policy objects, and `PolicyApplied`.
-- `TestWriteClockNeverOverwritesFirstSeen` — rewriting it restarts a customer's trial.
-- `TestTickWithholdsEscalationOnStaleInputs` and
-  `TestWithheldEscalationStillReportsFreshCounts` — a failed call must not move a
-  cluster toward Degraded, nor freeze the signals that did succeed.
-- `TestTickRecoversFromPoisonedFutureClock` — the trap described above.
-- `TestCommercialWithoutExpiryIsLicensedNotDegraded` — the one place the state
-  machine could fail *closed*.
-- `TestNodeUnits` — carries license-guardian's own expected values, so the two
-  implementations cannot silently diverge.
-
-## Notes for whoever extends this
-
-- **Metrics use synchronous gauges, not observable gauges with callbacks.**
-  `pkg/metrics` rebuilds the global `MeterProvider` on a timer when
-  `metricsRefreshInterval` is set, re-registering only its own built-ins, so anything
-  bound to a captured meter silently stops recording. `ensureInstruments` compares
-  provider identity every tick for this reason.
-- **Leadership is read from the existing `kyverno` Lease**, not a second election,
-  and `RenewTime`/`LeaseDurationSeconds` are checked rather than just the holder name
-  — a restarted or terminating pod still finds its own identity in a Lease it no
-  longer renews. Even so it is a snapshot: two pods can briefly both believe they are
-  leader, so every write path is idempotent.
-- **The anti-escalation guard pins `State` only.** Counts, overrun and the trial
-  anchor from a partially failed tick still publish, since those calls succeeded.
-  Discarding the whole evaluation would let one failing input hide a real overrun for
-  the duration of an unrelated outage.
-- **`LoadActiveClaims` in the SDK is unsuitable for diagnostics.** It degrades to the
-  community license on every failure mode and its sentinel errors are unexported, so
-  it cannot report *why* a license was rejected. Phase 2's file loader should call
-  `ParseAndVerify` and `ClaimsValidNow` directly.
+- `TestAdmitPolicyCreate` — CREATE gate matrix; UPDATE/DELETE and Unknown fail open.
+- `TestCommercialOverLimitEntersGrace` / `TestFreeTierOverLimitDoesNotChangeState`
+- `TestNextGraceStartedAt` / soft HMAC mismatch fail-open
+- Anti-escalation and clock skew tests from Phase 1 remain in force

@@ -1,6 +1,7 @@
 package license
 
 import (
+	"math"
 	"strconv"
 	"time"
 )
@@ -32,6 +33,26 @@ func Bound(n int) Cap { return Cap{Limit: n, Bounded: true} }
 
 // Exceeded reports whether used is over the limit. Always false when unbounded.
 func (c Cap) Exceeded(used int) bool { return c.Bounded && used > c.Limit }
+
+// AtLimit reports whether used is at or over the limit. Used by the CREATE gate
+// so a cluster already at the cap cannot add another policy.
+func (c Cap) AtLimit(used int) bool { return c.Bounded && used >= c.Limit }
+
+// Near reports whether used is in the warning band [ratio*limit, limit].
+// Always false when unbounded, when limit is zero, or when already over.
+//
+// The threshold is rounded, not truncated: truncation puts small caps into the
+// warning band far too early — a cap of 3 at ratio 0.9 would warn from 2 (67%).
+func (c Cap) Near(used int, ratio float64) bool {
+	if !c.Bounded || c.Limit <= 0 || used > c.Limit {
+		return false
+	}
+	threshold := int(math.Round(float64(c.Limit) * ratio))
+	if threshold < 1 {
+		threshold = 1
+	}
+	return used >= threshold
+}
 
 // String renders the cap for logs, as "unlimited" rather than a number so a log
 // line cannot be misread as a limit of zero.
@@ -65,9 +86,23 @@ type Limits struct {
 	// Warn is how long before expiry a commercial license starts warning.
 	Warn time.Duration
 
+	// WarnRatio is the utilization fraction at which a bounded cap starts
+	// warning. Zero means unset, in which case warnRatio() supplies the default
+	// — Evaluate must stay total, so an unset ratio can never mean "never warn".
+	WarnRatio float64
+
 	// UsedDefaults names the windows that fell back to the constants above.
 	// Non-empty means the active license should be re-issued.
 	UsedDefaults []string
+}
+
+// warnRatio returns the capacity warning ratio in effect, falling back to
+// DefaultWarnRatio when unset or out of the open interval (0, 1].
+func (l Limits) warnRatio() float64 {
+	if l.WarnRatio <= 0 || l.WarnRatio > 1 {
+		return DefaultWarnRatio
+	}
+	return l.WarnRatio
 }
 
 // days converts a whole number of days to a Duration.

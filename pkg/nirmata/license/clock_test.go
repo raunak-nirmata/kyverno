@@ -306,3 +306,119 @@ func TestWriteClockSurfacesConflict(t *testing.T) {
 		t.Fatalf("err = %v, want a conflict so the next tick retries", err)
 	}
 }
+
+func TestRenderClockIncludesHMAC(t *testing.T) {
+	t.Setenv(hmacKeyMaterialEnv, "test-seed")
+	data := renderClock(clockState{FirstSeen: base, LastSeen: base, LastState: FreeTier})
+	if data[keyHMAC] == "" {
+		t.Fatal("hmac must be present")
+	}
+	got, err := parseClock(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.HMACPresent || !got.HMACValid {
+		t.Errorf("HMACPresent=%v HMACValid=%v, want both true", got.HMACPresent, got.HMACValid)
+	}
+}
+
+func TestParseClockSoftHMACMismatch(t *testing.T) {
+	t.Setenv(hmacKeyMaterialEnv, "test-seed")
+	data := renderClock(clockState{FirstSeen: base, LastSeen: base})
+	data[keyHMAC] = "deadbeef"
+	got, err := parseClock(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.HMACPresent {
+		t.Error("HMACPresent must be true")
+	}
+	if got.HMACValid {
+		t.Error("tampered hmac must be invalid")
+	}
+	// Fail-open: timestamps remain usable.
+	if !got.FirstSeen.Equal(base) {
+		t.Errorf("FirstSeen = %v, want %v despite hmac mismatch", got.FirstSeen, base)
+	}
+}
+
+func TestNextGraceState(t *testing.T) {
+	t.Parallel()
+
+	prev := base.Add(-days(5))
+
+	t.Run("first detection stamps now", func(t *testing.T) {
+		got, compliant := nextGraceState(clockState{}, Grace, base)
+		if !got.Equal(base) {
+			t.Errorf("grace anchor = %v, want %v", got, base)
+		}
+		if !compliant.IsZero() {
+			t.Errorf("compliantSince = %v, want zero while non-compliant", compliant)
+		}
+	})
+
+	t.Run("ongoing non-compliance keeps the original stamp", func(t *testing.T) {
+		got, _ := nextGraceState(clockState{GraceStartedAt: prev}, Degraded, base)
+		if !got.Equal(prev) {
+			t.Errorf("grace anchor = %v, want the original %v", got, prev)
+		}
+	})
+
+	// A cluster oscillating around its node-unit entitlement would otherwise
+	// restart the grace window on every dip and never reach Degraded.
+	t.Run("brief compliance holds the anchor", func(t *testing.T) {
+		got, compliant := nextGraceState(clockState{GraceStartedAt: prev}, Licensed, base)
+		if !got.Equal(prev) {
+			t.Errorf("grace anchor = %v, want it held at %v until compliance is sustained", got, prev)
+		}
+		if !compliant.Equal(base) {
+			t.Errorf("compliantSince = %v, want %v", compliant, base)
+		}
+	})
+
+	t.Run("sustained compliance clears the anchor", func(t *testing.T) {
+		state := clockState{GraceStartedAt: prev, CompliantSince: base.Add(-graceClearAfter)}
+		got, compliant := nextGraceState(state, Licensed, base)
+		if !got.IsZero() {
+			t.Errorf("grace anchor = %v, want cleared after %v of compliance", got, graceClearAfter)
+		}
+		if !compliant.IsZero() {
+			t.Errorf("compliantSince = %v, want cleared alongside the anchor", compliant)
+		}
+	})
+
+	t.Run("compliance without an anchor stays empty", func(t *testing.T) {
+		got, compliant := nextGraceState(clockState{}, FreeTier, base)
+		if !got.IsZero() || !compliant.IsZero() {
+			t.Errorf("got (%v, %v), want both zero", got, compliant)
+		}
+	})
+}
+
+func TestWriteClockClearsGraceStartedAt(t *testing.T) {
+	t.Setenv(hmacKeyMaterialEnv, "test-seed")
+	client := fake.NewSimpleClientset(clockCM(renderClock(clockState{
+		FirstSeen:      base,
+		LastSeen:       base,
+		GraceStartedAt: base.Add(time.Hour),
+		LastState:      Grace,
+	})))
+	_, cm, err := readClock(context.Background(), client, testNamespace, testClockName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeClock(context.Background(), client, cm, clockState{
+		FirstSeen: base,
+		LastSeen:  base,
+		LastState: Licensed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stored, _, err := readClock(context.Background(), client, testNamespace, testClockName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.GraceStartedAt.IsZero() {
+		t.Errorf("GraceStartedAt = %v, want cleared", stored.GraceStartedAt)
+	}
+}

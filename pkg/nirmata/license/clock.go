@@ -2,10 +2,17 @@ package license
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
+	"sort"
+	"strings"
 	"time"
 
+	"github.com/kyverno/kyverno/pkg/config"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -14,11 +21,13 @@ import (
 
 // Keys in the license-state ConfigMap. Values are RFC3339 UTC strings.
 const (
-	keySchemaVersion = "schemaVersion"
-	keyFirstSeen     = "firstSeen"
-	keyLastSeen      = "lastSeen"
-	keyGraceStarted  = "graceStartedAt"
-	keyLastState     = "lastState"
+	keySchemaVersion  = "schemaVersion"
+	keyFirstSeen      = "firstSeen"
+	keyLastSeen       = "lastSeen"
+	keyGraceStarted   = "graceStartedAt"
+	keyCompliantSince = "compliantSince"
+	keyLastState      = "lastState"
+	keyHMAC           = "hmac"
 
 	clockSchemaVersion = "1"
 
@@ -31,14 +40,15 @@ const (
 	// that starts with a wrong future clock poisons lastSeen permanently. See the
 	// clock section of README.md for the trade this makes.
 	forwardTrustHorizon = 24 * time.Hour
+
+	hmacKeyMaterialEnv = "N4K_LICENSE_STATE_HMAC_SEED"
 )
 
 // errClockAbsent means the license-state ConfigMap does not exist yet.
 var errClockAbsent = errors.New("license state configmap not found")
 
 // clockState is the persisted trial and grace bookkeeping, held in a ConfigMap so
-// it survives restarts and is shared across replicas. Deliberately unsigned;
-// deleting it grants a fresh trial, which is an accepted risk (README.md).
+// it survives restarts and is shared across replicas.
 type clockState struct {
 	// FirstSeen anchors the trial window. Written once, never overwritten.
 	FirstSeen time.Time
@@ -46,11 +56,26 @@ type clockState struct {
 	// LastSeen is refreshed each leader tick, to detect a backwards clock.
 	LastSeen time.Time
 
-	// GraceStartedAt is first detection of non-compliance. Reserved for Phase 2.
+	// GraceStartedAt is first detection of paid non-compliance.
 	GraceStartedAt time.Time
+
+	// CompliantSince is when a cluster holding a grace anchor last became
+	// compliant again. Zero while non-compliant. See nextGraceState.
+	CompliantSince time.Time
 
 	// LastState is the last reported state, so events fire only on transition.
 	LastState State
+
+	// HMACValid and HMACPresent are parse results, not persisted fields:
+	// renderClock ignores them and recomputes the MAC from the data it writes.
+	// Only parseClock sets them meaningfully.
+	//
+	// HMACValid is true when the stored MAC matched, or when no MAC was expected
+	// yet. Soft integrity: a mismatch is reported but never fails closed.
+	HMACValid bool
+
+	// HMACPresent is true when the ConfigMap carried an hmac field.
+	HMACPresent bool
 }
 
 // parseClock reads a clockState out of ConfigMap data. Unparseable timestamps yield
@@ -77,11 +102,20 @@ func parseClock(data map[string]string) (clockState, error) {
 	parse(keyFirstSeen, &out.FirstSeen)
 	parse(keyLastSeen, &out.LastSeen)
 	parse(keyGraceStarted, &out.GraceStartedAt)
+	parse(keyCompliantSince, &out.CompliantSince)
 	out.LastState = State(data[keyLastState])
+
+	if mac, ok := data[keyHMAC]; ok && mac != "" {
+		out.HMACPresent = true
+		out.HMACValid = hmac.Equal([]byte(mac), []byte(computeHMAC(data)))
+	} else {
+		// No MAC yet — normal for upgrades from Phase 1. Soft: treat as valid.
+		out.HMACValid = true
+	}
 	return out, errors.Join(errs...)
 }
 
-// renderClock serialises a clockState back to ConfigMap data.
+// renderClock serialises a clockState back to ConfigMap data, including a soft HMAC.
 func renderClock(s clockState) map[string]string {
 	data := map[string]string{keySchemaVersion: clockSchemaVersion}
 	put := func(key string, t time.Time) {
@@ -93,10 +127,46 @@ func renderClock(s clockState) map[string]string {
 	put(keyFirstSeen, s.FirstSeen)
 	put(keyLastSeen, s.LastSeen)
 	put(keyGraceStarted, s.GraceStartedAt)
+	put(keyCompliantSince, s.CompliantSince)
 	if s.LastState != "" {
 		data[keyLastState] = string(s.LastState)
 	}
+	data[keyHMAC] = computeHMAC(data)
 	return data
+}
+
+func computeHMAC(data map[string]string) string {
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		if k == keyHMAC {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(data[k])
+		b.WriteByte('\n')
+	}
+	mac := hmac.New(sha256.New, hmacKey())
+	_, _ = mac.Write([]byte(b.String()))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// hmacKey returns the checksum key. Prefers an explicit seed (tests, and installs
+// that want a real secret); otherwise derives from the namespace so replicas agree
+// without shipping a private key in the binary. A namespace-derived key is not
+// secret — see computeHMAC for what that does and does not buy.
+func hmacKey() []byte {
+	if seed := os.Getenv(hmacKeyMaterialEnv); seed != "" {
+		sum := sha256.Sum256([]byte(seed))
+		return sum[:]
+	}
+	sum := sha256.Sum256([]byte("n4k-license-state|" + config.KyvernoNamespace()))
+	return sum[:]
 }
 
 // skewVerdict describes how a stored lastSeen compared to the current clock.
@@ -183,6 +253,9 @@ func writeClock(ctx context.Context, client kubernetes.Interface, cm *corev1.Con
 
 	next := renderClock(want)
 	for k, v := range next {
+		if k == keyHMAC {
+			continue
+		}
 		// Never rewrite an existing firstSeen, parseable or not.
 		if k == keyFirstSeen {
 			if existing, ok := updated.Data[keyFirstSeen]; ok && existing != "" {
@@ -191,7 +264,40 @@ func writeClock(ctx context.Context, client kubernetes.Interface, cm *corev1.Con
 		}
 		updated.Data[k] = v
 	}
+	// renderClock omits zero timestamps, so a cleared value needs an explicit
+	// delete or the stale one would survive the merge above.
+	if want.GraceStartedAt.IsZero() {
+		delete(updated.Data, keyGraceStarted)
+	}
+	if want.CompliantSince.IsZero() {
+		delete(updated.Data, keyCompliantSince)
+	}
+	updated.Data[keyHMAC] = computeHMAC(updated.Data)
 
 	_, err := client.CoreV1().ConfigMaps(updated.Namespace).Update(ctx, updated, metav1.UpdateOptions{})
 	return err
+}
+
+const graceClearAfter = 24 * time.Hour
+
+func nextGraceState(prev clockState, state State, now time.Time) (graceStartedAt, compliantSince time.Time) {
+	switch state {
+	case Grace, Degraded:
+		if prev.GraceStartedAt.IsZero() {
+			return now, time.Time{}
+		}
+		return prev.GraceStartedAt, time.Time{}
+	default:
+		if prev.GraceStartedAt.IsZero() {
+			return time.Time{}, time.Time{}
+		}
+		since := prev.CompliantSince
+		if since.IsZero() {
+			since = now
+		}
+		if !now.Before(since.Add(graceClearAfter)) {
+			return time.Time{}, time.Time{}
+		}
+		return prev.GraceStartedAt, since
+	}
 }

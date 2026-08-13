@@ -23,8 +23,7 @@ import (
 const AuthoritativeComponent = "kyverno-admission-controller"
 
 // current holds the most recent snapshot for package-level access via Current().
-// Nothing reads it in Phase 1. The service also keeps its own copy so tests do not
-// race this global.
+// AdmitPolicyCreate reads it on the policy CREATE path.
 var current atomic.Pointer[Snapshot]
 
 // Current returns the most recently evaluated state. Unknown before the first
@@ -46,8 +45,7 @@ type service struct {
 	metrics *instruments
 	events  event.Interface
 
-	// load resolves the active license. A field so tests can use a throwaway key and
-	// Phase 2 can swap in a file-preferring loader.
+	// load resolves the active license. A field so tests can inject a throwaway key.
 	load func(time.Time) (Active, error)
 
 	// snapshot is this service's own view, so the loop is testable in isolation.
@@ -83,11 +81,14 @@ func Start(ctx context.Context, logger logr.Logger, opts Options) {
 		opts.DeploymentName = config.KyvernoDeploymentName()
 	}
 
+	path := opts.LicensePath
 	s := &service{
-		logger:   logger,
-		opts:     opts,
-		now:      opts.clock(),
-		load:     LoadActive,
+		logger: logger,
+		opts:   opts,
+		now:    opts.clock(),
+		load: func(now time.Time) (Active, error) {
+			return LoadActive(now, path)
+		},
 		lastEmit: map[string]time.Time{},
 	}
 	if opts.EventsClient != nil {
@@ -159,6 +160,23 @@ func (s *service) tick(ctx context.Context) {
 		s.metrics.recordError(ctx, "load")
 		return
 	}
+	if active.Invalid {
+		cause := "invalid"
+		if active.FileError != nil {
+			cause = active.FileError.Error()
+		}
+		s.logOnce("file", fmt.Errorf("%s", cause),
+			"commercial license file is present but invalid; treating as non-compliant")
+		s.metrics.recordError(ctx, "file")
+	}
+	if active.FileMissing {
+		// Secret deleted or mount empty: keep serving on free tier. Cap gate may
+		// refuse new over-cap policies; workload admission stays on.
+		s.logOnce("filemissing", errors.New("commercial license file missing"),
+			"commercial license file is missing or empty; falling back to free-tier community license",
+			"path", s.opts.LicensePath)
+		s.metrics.recordError(ctx, "file_missing")
+	}
 	if len(active.Limits.UsedDefaults) > 0 {
 		// Not an error: a community license legitimately carries no grace_days, so the
 		// common case is a correct license falling back to a default.
@@ -167,11 +185,19 @@ func (s *service) tick(ctx context.Context) {
 			"fields", active.Limits.UsedDefaults)
 	}
 
+	// Operator override for the capacity warning threshold. Applied to active, not
+	// just to Inputs, so metrics and logs describe the same limits Evaluate used.
+	if s.opts.WarnRatio > 0 {
+		active.Limits.WarnRatio = s.opts.WarnRatio
+	}
+
 	prev := s.snapshot.Load()
 	in := Inputs{
 		Now:        now,
 		Commercial: active.Commercial,
+		Invalid:    active.Invalid,
 		NotAfter:   active.NotAfter,
+		NotBefore:  active.NotBefore,
 		Limits:     active.Limits,
 	}
 	// Carry previous counts forward so a failed fetch cannot look like released
@@ -180,6 +206,7 @@ func (s *service) tick(ctx context.Context) {
 		in.PolicyCount = prev.Inputs.PolicyCount
 		in.NodeUnitCount = prev.Inputs.NodeUnitCount
 		in.TrialStart = prev.Inputs.TrialStart
+		in.GraceStartedAt = prev.Inputs.GraceStartedAt
 	}
 	stale := false
 
@@ -191,6 +218,12 @@ func (s *service) tick(ctx context.Context) {
 		stale = true
 	default:
 		in.TrialStart = clock.FirstSeen
+		in.GraceStartedAt = clock.GraceStartedAt
+		if clock.HMACPresent && !clock.HMACValid {
+			s.logOnce("hmac", errors.New("license state hmac mismatch"),
+				"license state ConfigMap HMAC does not match; continuing with readable timestamps (fail-open)")
+			s.metrics.recordError(ctx, "hmac")
+		}
 		adjusted, verdict := effectiveNow(in.Now, clock.LastSeen)
 		in.Now = adjusted
 		switch verdict {
@@ -243,6 +276,14 @@ func (s *service) tick(ctx context.Context) {
 
 	next := Evaluate(in)
 
+	priorCompliantSince := clock.CompliantSince
+	graceStartedAt, compliantSince := nextGraceState(
+		clockState{GraceStartedAt: in.GraceStartedAt, CompliantSince: clock.CompliantSince},
+		next.State, next.Inputs.Now,
+	)
+	next.Inputs.GraceStartedAt = graceStartedAt
+	clock.CompliantSince = compliantSince
+
 	// Anti-escalation guard: on stale input, hold State at what we already knew so an
 	// API outage cannot move a cluster toward Degraded. Improvements always apply.
 	//
@@ -254,6 +295,10 @@ func (s *service) tick(ctx context.Context) {
 			"holdingAt", prev.State, "wouldBe", next.State)
 		next.State = prev.State
 		next.Reason = "inputs incomplete; holding previously reported state"
+		next.Inputs.GraceStartedAt = prev.Inputs.GraceStartedAt
+		// Incomplete inputs are not evidence of compliance, so do not let them
+		// start or advance the clear-down clock.
+		clock.CompliantSince = priorCompliantSince
 	}
 
 	s.store(&next)
@@ -379,6 +424,7 @@ func (s *service) report(
 		"reason", next.Reason,
 		"customer", active.Claims.Customer,
 		"origin", active.Origin,
+		"commercial", active.Commercial,
 		"policies", next.Inputs.PolicyCount,
 		"policiesAllowed", next.Inputs.Limits.Policies,
 		"nodeUnits", next.Inputs.NodeUnitCount,
@@ -386,17 +432,37 @@ func (s *service) report(
 		"daysRemaining", next.DaysRemaining,
 	}
 	switch {
+	case next.State == FreeExpired || next.State == Grace || next.State == Degraded:
+		if changed || s.shouldEmit("state:"+string(next.State), next.Inputs.Now) {
+			s.logger.Info("Nirmata license state", fields...)
+		} else {
+			s.logger.V(3).Info("Nirmata license evaluated", fields...)
+		}
 	case changed && !next.State.IsHealthy():
 		s.logger.Info("Nirmata license state changed", fields...)
+	// Before the general `changed` case, which would otherwise swallow it: a
+	// commercial license coming into force is the one healthy transition an
+	// operator wants confirmed at default verbosity.
+	case changed && next.State == Licensed:
+		s.logger.Info("Nirmata commercial license active", fields...)
 	case changed:
 		s.logger.V(2).Info("Nirmata license state changed", fields...)
+	case next.State == FreeTier && s.shouldEmit("freetier", next.Inputs.Now):
+		s.logger.Info("Nirmata free tier active", fields...)
 	default:
 		s.logger.V(3).Info("Nirmata license evaluated", fields...)
 	}
 	if next.OverPolicies || next.OverNodeUnits {
-		s.logger.Info("Nirmata licensed capacity exceeded; policy enforcement is unaffected",
+		msg := "Nirmata licensed capacity exceeded"
+		if next.State.EnforcesPolicyCap() {
+			msg += "; new over-cap policy creates will be refused"
+		} else {
+			msg += "; full function preserved during grace/warning"
+		}
+		s.logger.Info(msg,
 			"policies", next.Inputs.PolicyCount, "policiesAllowed", next.Inputs.Limits.Policies,
-			"nodeUnits", next.Inputs.NodeUnitCount, "nodeUnitsAllowed", next.Inputs.Limits.NodeUnits)
+			"nodeUnits", next.Inputs.NodeUnitCount, "nodeUnitsAllowed", next.Inputs.Limits.NodeUnits,
+			"state", next.State)
 	}
 
 	if !isLeader {
@@ -411,6 +477,7 @@ func (s *service) report(
 		}
 		want.LastSeen = next.Inputs.Now
 		want.LastState = next.State
+		want.GraceStartedAt = next.Inputs.GraceStartedAt
 		if err := writeClock(ctx, s.opts.KubeClient, cm, want); err != nil {
 			s.logger.V(3).Info("could not persist license state; will retry on the next evaluation",
 				"error", err.Error())
@@ -437,10 +504,10 @@ func (s *service) emit(ctx context.Context, from State, next Snapshot, changed b
 		infos = append(infos, stateEvent(ref, from, next.State, next))
 	}
 	if next.OverPolicies && s.shouldEmit("policies", next.Inputs.Now) {
-		infos = append(infos, limitEvent(ref, "policy", next.Inputs.PolicyCount, next.Inputs.Limits.Policies))
+		infos = append(infos, limitEvent(ref, "policy", next.Inputs.PolicyCount, next.Inputs.Limits.Policies, next.State))
 	}
 	if next.OverNodeUnits && s.shouldEmit("nodeUnits", next.Inputs.Now) {
-		infos = append(infos, limitEvent(ref, "node unit", next.Inputs.NodeUnitCount, next.Inputs.Limits.NodeUnits))
+		infos = append(infos, limitEvent(ref, "node unit", next.Inputs.NodeUnitCount, next.Inputs.Limits.NodeUnits, next.State))
 	}
 	if len(infos) > 0 {
 		s.events.Add(infos...)

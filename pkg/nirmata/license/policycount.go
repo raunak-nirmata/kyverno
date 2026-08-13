@@ -13,26 +13,61 @@ import (
 // policyListPageSize bounds the metadata held while counting.
 const policyListPageSize = 500
 
-// policyGVRs is every Kyverno policy kind counting toward the cap, including
+// policyResource is one countable policy kind and the API versions it may be
+// served at, in preference order. Versions are candidates for the *same* CRD, so
+// the first one that lists successfully is authoritative — trying the rest would
+// count the same objects twice.
+//
+// Strings rather than Go types: the policies.kyverno.io types live in the separate
+// github.com/kyverno/api module, and strings keep this file immune to its type
+// churn across rebases.
+type policyResource struct {
+	Group    string
+	Resource string
+	Versions []string
+}
+
+// policyResources is every Kyverno policy kind counting toward the cap, including
 // namespaced variants — so a limit on ClusterPolicy cannot be sidestepped by
 // authoring ValidatingPolicy instead.
 //
-// GVR strings rather than Go types: the policies.kyverno.io types live in the
-// separate github.com/kyverno/api module, and strings keep this file immune to its
-// type churn across rebases.
-var policyGVRs = []schema.GroupVersionResource{
-	{Group: "kyverno.io", Version: "v1", Resource: "clusterpolicies"},
-	{Group: "kyverno.io", Version: "v1", Resource: "policies"},
-	{Group: "policies.kyverno.io", Version: "v1beta1", Resource: "validatingpolicies"},
-	{Group: "policies.kyverno.io", Version: "v1beta1", Resource: "namespacedvalidatingpolicies"},
-	{Group: "policies.kyverno.io", Version: "v1beta1", Resource: "mutatingpolicies"},
-	{Group: "policies.kyverno.io", Version: "v1beta1", Resource: "namespacedmutatingpolicies"},
-	{Group: "policies.kyverno.io", Version: "v1beta1", Resource: "generatingpolicies"},
-	{Group: "policies.kyverno.io", Version: "v1beta1", Resource: "namespacedgeneratingpolicies"},
-	{Group: "policies.kyverno.io", Version: "v1beta1", Resource: "imagevalidatingpolicies"},
-	{Group: "policies.kyverno.io", Version: "v1beta1", Resource: "namespacedimagevalidatingpolicies"},
-	{Group: "policies.kyverno.io", Version: "v1beta1", Resource: "deletingpolicies"},
-	{Group: "policies.kyverno.io", Version: "v1beta1", Resource: "namespaceddeletingpolicies"},
+// Every kind here must also be covered by licensedPolicyRules in
+// pkg/controllers/webhook/controller.go, or it would consume cap without ever
+// being gated. TestLicenseWebhookCoversCountedKinds enforces that pairing.
+//
+// Listing several versions matters: pinning a single one means a cluster that
+// serves a different version returns NotFound, the kind is silently classed
+// unavailable, and it contributes zero to the cap.
+var policyResources = []policyResource{
+	{Group: "kyverno.io", Resource: "clusterpolicies", Versions: []string{"v1", "v2beta1"}},
+	{Group: "kyverno.io", Resource: "policies", Versions: []string{"v1", "v2beta1"}},
+	{Group: "policies.kyverno.io", Resource: "validatingpolicies", Versions: []string{"v1", "v1beta1", "v1alpha1"}},
+	{Group: "policies.kyverno.io", Resource: "namespacedvalidatingpolicies", Versions: []string{"v1", "v1beta1"}},
+	{Group: "policies.kyverno.io", Resource: "mutatingpolicies", Versions: []string{"v1", "v1beta1", "v1alpha1"}},
+	{Group: "policies.kyverno.io", Resource: "namespacedmutatingpolicies", Versions: []string{"v1", "v1beta1"}},
+	{Group: "policies.kyverno.io", Resource: "generatingpolicies", Versions: []string{"v1", "v1beta1", "v1alpha1"}},
+	{Group: "policies.kyverno.io", Resource: "namespacedgeneratingpolicies", Versions: []string{"v1", "v1beta1"}},
+	{Group: "policies.kyverno.io", Resource: "imagevalidatingpolicies", Versions: []string{"v1", "v1beta1", "v1alpha1"}},
+	{Group: "policies.kyverno.io", Resource: "namespacedimagevalidatingpolicies", Versions: []string{"v1", "v1beta1"}},
+	{Group: "policies.kyverno.io", Resource: "deletingpolicies", Versions: []string{"v1", "v1beta1", "v1alpha1"}},
+	{Group: "policies.kyverno.io", Resource: "namespaceddeletingpolicies", Versions: []string{"v1", "v1beta1"}},
+}
+
+// primaryGVR is the preferred group/version/resource: the first candidate version,
+// which is the one a current cluster serves.
+func (r policyResource) primaryGVR() schema.GroupVersionResource {
+	return schema.GroupVersionResource{Group: r.Group, Version: r.Versions[0], Resource: r.Resource}
+}
+
+// CountedPolicyResources reports every group/resource that counts toward the
+// licensed policy cap. Exported so the webhook controller's test can assert the
+// licensing gate covers exactly these kinds.
+func CountedPolicyResources() []schema.GroupResource {
+	out := make([]schema.GroupResource, 0, len(policyResources))
+	for _, r := range policyResources {
+		out = append(out, schema.GroupResource{Group: r.Group, Resource: r.Resource})
+	}
+	return out
 }
 
 // policyCounts is the result of one counting pass.
@@ -53,17 +88,17 @@ type policyCounts struct {
 // metadata client so specs are not transferred. Errors are per-kind: one un-listable
 // kind must not blank out the other eleven.
 func countPolicies(ctx context.Context, client metadata.Interface) (policyCounts, error) {
-	out := policyCounts{ByKind: make(map[string]int, len(policyGVRs))}
+	out := policyCounts{ByKind: make(map[string]int, len(policyResources))}
 
-	for _, gvr := range policyGVRs {
-		n, err := countResource(ctx, client, gvr)
+	for _, resource := range policyResources {
+		n, err := countResource(ctx, client, resource)
 		switch {
 		case err == nil:
-			out.ByKind[gvr.Resource] = n
+			out.ByKind[resource.Resource] = n
 			out.Total += n
 		case apierrors.IsNotFound(err), apierrors.IsForbidden(err):
 			// CRD not installed, or the licensing RBAC rule is missing.
-			out.Unavailable = append(out.Unavailable, gvr.Resource)
+			out.Unavailable = append(out.Unavailable, resource.Resource)
 		default:
 			return out, err
 		}
@@ -71,7 +106,7 @@ func countPolicies(ctx context.Context, client metadata.Interface) (policyCounts
 
 	// Nothing listable means "zero" is false rather than small — usually missing
 	// licensing RBAC. Fail, so the caller keeps the previous count.
-	if len(out.Unavailable) == len(policyGVRs) {
+	if len(out.Unavailable) == len(policyResources) {
 		return out, fmt.Errorf("no Kyverno policy kinds could be listed (%d kinds unavailable); "+
 			"the licensing RBAC rule is probably missing", len(out.Unavailable))
 	}
@@ -79,7 +114,27 @@ func countPolicies(ctx context.Context, client metadata.Interface) (policyCounts
 }
 
 // countResource pages through one resource and returns how many objects exist.
-func countResource(ctx context.Context, client metadata.Interface, gvr schema.GroupVersionResource) (int, error) {
+//
+// Candidate versions are tried in order and the first that responds wins; a
+// NotFound means that version is not served, not that the kind is absent, so the
+// NotFound from the last candidate is what propagates.
+func countResource(ctx context.Context, client metadata.Interface, resource policyResource) (int, error) {
+	var err error
+	for _, version := range resource.Versions {
+		gvr := schema.GroupVersionResource{Group: resource.Group, Version: version, Resource: resource.Resource}
+		var total int
+		if total, err = countGVR(ctx, client, gvr); err == nil {
+			return total, nil
+		}
+		if !apierrors.IsNotFound(err) {
+			return 0, err
+		}
+	}
+	return 0, err
+}
+
+// countGVR pages through one group/version/resource and returns how many objects exist.
+func countGVR(ctx context.Context, client metadata.Interface, gvr schema.GroupVersionResource) (int, error) {
 	total := 0
 	opts := metav1.ListOptions{Limit: policyListPageSize}
 	for {

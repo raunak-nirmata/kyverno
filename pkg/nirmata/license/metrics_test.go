@@ -92,6 +92,10 @@ func TestRecordPublishesSnapshot(t *testing.T) {
 		t.Errorf("%s had %d series set to 1, want exactly 1", metricState, ones)
 	}
 
+	if v := got[metricValid]; len(v) != 1 || v[0] != 1 {
+		t.Errorf("%s = %v, want [1] for FreeTier", metricValid, v)
+	}
+
 	// Over-limit is reported for both dimensions: policies over, nodes not.
 	over := got[metricOverLimit]
 	if len(over) != 2 {

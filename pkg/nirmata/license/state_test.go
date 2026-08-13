@@ -104,35 +104,35 @@ func TestEvaluateCommercialLadder(t *testing.T) {
 	expiry := base.Add(days(100))
 
 	tests := []struct {
-		name      string
-		now       time.Time
-		wantState State
+		name           string
+		now            time.Time
+		graceStartedAt time.Time
+		wantState      State
 	}{
-		{"well inside the window", base, Licensed},
-		{"one second before the warning window opens", expiry.Add(-days(30)).Add(-time.Second), Licensed},
-		{"exactly at the warning boundary", expiry.Add(-days(30)), Warning},
-		{"inside the warning window", expiry.Add(-days(1)), Warning},
-		{"exactly at expiry is still Warning, not Grace", expiry, Warning},
-		{"one second past expiry enters Grace", expiry.Add(time.Second), Grace},
-		{"exactly at the end of grace is still Grace", expiry.Add(days(30)), Grace},
-		{"one second past grace is Degraded", expiry.Add(days(30)).Add(time.Second), Degraded},
-		{"long past grace", expiry.Add(days(400)), Degraded},
+		{"well inside the window", base, time.Time{}, Licensed},
+		{"one second before the warning window opens", expiry.Add(-days(30)).Add(-time.Second), time.Time{}, Licensed},
+		{"exactly at the warning boundary", expiry.Add(-days(30)), time.Time{}, Warning},
+		{"inside the warning window", expiry.Add(-days(1)), time.Time{}, Warning},
+		{"exactly at expiry is still Warning, not Grace", expiry, time.Time{}, Warning},
+		{"one second past expiry enters Grace (first detection)", expiry.Add(time.Second), time.Time{}, Grace},
+		{"grace measured from first detection, still inside", expiry.Add(days(10)), expiry.Add(time.Second), Grace},
+		{"exactly at the end of grace is still Grace", expiry.Add(days(30)).Add(time.Second), expiry.Add(time.Second), Grace},
+		{"one second past grace is Degraded", expiry.Add(days(30)).Add(2 * time.Second), expiry.Add(time.Second), Degraded},
+		{"long past grace", expiry.Add(days(400)), expiry.Add(time.Second), Degraded},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := Evaluate(Inputs{
-				Now:        tt.now,
-				Commercial: true,
-				NotAfter:   expiry,
-				Limits:     windows,
+				Now:            tt.now,
+				Commercial:     true,
+				NotAfter:       expiry,
+				GraceStartedAt: tt.graceStartedAt,
+				Limits:         windows,
 			})
 			if got.State != tt.wantState {
 				t.Errorf("State = %q, want %q (reason: %s)", got.State, tt.wantState, got.Reason)
-			}
-			if !got.Expiry.Equal(expiry) {
-				t.Errorf("Expiry = %v, want %v", got.Expiry, expiry)
 			}
 		})
 	}
@@ -155,9 +155,9 @@ func TestCommercialIgnoresTrialClock(t *testing.T) {
 	}
 }
 
-// Phase 1 contract: exceeding a cap is reported but must not change State.
-// If this test starts failing, someone has given Phase 1 teeth by accident.
-func TestOverLimitIsReportedButDoesNotChangeState(t *testing.T) {
+// Free-tier capacity overrun is reported but does not change FreeTier/FreeExpired.
+// Commercial overrun enters Grace/Degraded via the paid ladder.
+func TestFreeTierOverLimitDoesNotChangeState(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -191,9 +191,58 @@ func TestOverLimitIsReportedButDoesNotChangeState(t *testing.T) {
 				t.Errorf("OverNodeUnits = %v, want %v", got.OverNodeUnits, tt.wantOverNodes)
 			}
 			if got.State != FreeTier {
-				t.Errorf("State = %q, want FreeTier; Phase 1 must not let capacity overrun change state", got.State)
+				t.Errorf("State = %q, want FreeTier; free-tier overrun must not change state", got.State)
 			}
 		})
+	}
+}
+
+func TestCommercialOverLimitEntersGrace(t *testing.T) {
+	t.Parallel()
+
+	got := Evaluate(Inputs{
+		Now:         base,
+		Commercial:  true,
+		NotAfter:    base.Add(days(365)),
+		Limits:      windows,
+		PolicyCount: 11,
+	})
+	if got.State != Grace {
+		t.Errorf("State = %q, want Grace on first over-cap detection (reason: %s)", got.State, got.Reason)
+	}
+	if !got.OverPolicies {
+		t.Error("OverPolicies must be true")
+	}
+}
+
+func TestCommercialNearCapIsWarning(t *testing.T) {
+	t.Parallel()
+
+	got := Evaluate(Inputs{
+		Now:         base,
+		Commercial:  true,
+		NotAfter:    base.Add(days(365)),
+		Limits:      windows,
+		PolicyCount: 9, // 90% of 10
+	})
+	if got.State != Warning {
+		t.Errorf("State = %q, want Warning at 90%% utilization (reason: %s)", got.State, got.Reason)
+	}
+	if !got.NearPolicies {
+		t.Error("NearPolicies must be true")
+	}
+}
+
+func TestInvalidCommercialEntersGrace(t *testing.T) {
+	t.Parallel()
+
+	got := Evaluate(Inputs{
+		Now:     base,
+		Invalid: true,
+		Limits:  windows,
+	})
+	if got.State != Grace {
+		t.Errorf("State = %q, want Grace for invalid commercial file (reason: %s)", got.State, got.Reason)
 	}
 }
 

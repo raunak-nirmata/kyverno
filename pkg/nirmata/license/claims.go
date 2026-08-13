@@ -16,6 +16,7 @@ func ResolveLimits(c nctllicense.Claims) Limits {
 		Policies:  Unlimited(),
 		NodeUnits: Unlimited(),
 		Warn:      days(DefaultWarnDays),
+		WarnRatio: DefaultWarnRatio,
 	}
 
 	if limit, bounded := c.PolicyCap(); bounded {

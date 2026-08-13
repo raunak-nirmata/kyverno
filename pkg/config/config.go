@@ -41,10 +41,16 @@ const (
 	VerifyMutatingWebhookConfigurationName = "kyverno-verify-mutating-webhook-cfg"
 	// TtlValidatingWebhookConfigurationName ttl label validating webhook configuration name
 	TtlValidatingWebhookConfigurationName = "kyverno-ttl-validating-webhook-cfg"
+	// LicenseValidatingWebhookConfigurationName is the Nirmata licensing capacity
+	// gate. Separate from the policy webhook so it can cover every policy kind
+	// that counts toward the cap without changing policy content validation.
+	LicenseValidatingWebhookConfigurationName = "kyverno-license-validating-webhook-cfg"
 )
 
 // webhook names
 const (
+	// LicenseValidatingWebhookName is the Nirmata licensing capacity gate webhook
+	LicenseValidatingWebhookName = "validate-license.kyverno.svc"
 	// PolicyValidatingWebhookName default policy validating webhook name
 	PolicyValidatingWebhookName = "validate-policy.kyverno.svc"
 	// ValidatingWebhookName ...
@@ -71,6 +77,8 @@ const (
 
 // paths
 const (
+	// LicenseValidatingWebhookServicePath is the path for the Nirmata licensing capacity gate
+	LicenseValidatingWebhookServicePath = "/licensevalidate"
 	// PolicyValidatingWebhookServicePath is the path for policy validation webhook(used to validate policy resource)
 	PolicyValidatingWebhookServicePath = "/policyvalidate"
 	// ValidatingWebhookServicePath is the path for validation webhook

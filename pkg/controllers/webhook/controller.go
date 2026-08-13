@@ -105,10 +105,44 @@ var (
 		APIGroups:   []string{"policies.kyverno.io"},
 		APIVersions: []string{"v1alpha1", "v1beta1", "v1"},
 	}
+	namespacedDeletingPolicyRule = admissionregistrationv1.Rule{
+		Resources:   []string{"namespaceddeletingpolicies"},
+		APIGroups:   []string{"policies.kyverno.io"},
+		APIVersions: []string{"v1beta1", "v1"},
+	}
+	mutatingPolicyRule = admissionregistrationv1.Rule{
+		Resources:   []string{"mutatingpolicies"},
+		APIGroups:   []string{"policies.kyverno.io"},
+		APIVersions: []string{"v1alpha1", "v1beta1", "v1"},
+	}
+	namespacedMutatingPolicyRule = admissionregistrationv1.Rule{
+		Resources:   []string{"namespacedmutatingpolicies"},
+		APIGroups:   []string{"policies.kyverno.io"},
+		APIVersions: []string{"v1beta1", "v1"},
+	}
 	policyRule = admissionregistrationv1.Rule{
 		Resources:   []string{"clusterpolicies", "policies"},
 		APIGroups:   []string{"kyverno.io"},
 		APIVersions: []string{"v1", "v2beta1"},
+	}
+	// licensedPolicyRules is every policy kind that counts toward the Nirmata
+	// licensed policy cap. It must stay in step with policyGVRs in
+	// pkg/nirmata/license/policycount.go: a kind that is counted but not gated
+	// can be created without limit while still consuming other kinds' capacity,
+	// and a kind that is gated but not counted would be refused for no reason.
+	// TestLicenseWebhookCoversCountedKinds enforces the pairing.
+	licensedPolicyRules = []admissionregistrationv1.Rule{
+		policyRule,
+		validatingPolicyRule,
+		namespacedValidatingPolicyRule,
+		mutatingPolicyRule,
+		namespacedMutatingPolicyRule,
+		generatingPolicyRule,
+		namespacedGeneratingPolicyRule,
+		imagevalidatingPolicyRule,
+		namespacedimagevalidatingPolicyRule,
+		deletingPolicyRule,
+		namespacedDeletingPolicyRule,
 	}
 	verifyRule = admissionregistrationv1.Rule{
 		Resources:   []string{"leases"},
@@ -521,6 +555,7 @@ func (c *controller) enqueueAll() {
 func (c *controller) enqueuePolicyWebhooks() {
 	c.queue.Add(config.PolicyValidatingWebhookConfigurationName)
 	c.queue.Add(config.PolicyMutatingWebhookConfigurationName)
+	c.queue.Add(config.LicenseValidatingWebhookConfigurationName)
 }
 
 func (c *controller) enqueueResourceWebhooks(duration time.Duration) {
@@ -583,6 +618,10 @@ func (c *controller) reconcileResourceMutatingWebhookConfiguration(ctx context.C
 
 func (c *controller) reconcilePolicyValidatingWebhookConfiguration(ctx context.Context) error {
 	return c.reconcileValidatingWebhookConfiguration(ctx, true, c.buildPolicyValidatingWebhookConfiguration)
+}
+
+func (c *controller) reconcileLicenseValidatingWebhookConfiguration(ctx context.Context) error {
+	return c.reconcileValidatingWebhookConfiguration(ctx, true, c.buildLicenseValidatingWebhookConfiguration)
 }
 
 func (c *controller) reconcilePolicyMutatingWebhookConfiguration(ctx context.Context) error {
@@ -829,6 +868,11 @@ func (c *controller) reconcile(ctx context.Context, logger logr.Logger, key, nam
 			return nil
 		}
 		return c.reconcilePolicyValidatingWebhookConfiguration(ctx)
+	case config.LicenseValidatingWebhookConfigurationName:
+		if disableWebhook {
+			return nil
+		}
+		return c.reconcileLicenseValidatingWebhookConfiguration(ctx)
 	case config.PolicyMutatingWebhookConfigurationName:
 		if disableWebhook {
 			return nil
@@ -964,6 +1008,30 @@ func (c *controller) buildPolicyMutatingWebhookConfiguration(_ context.Context, 
 				TimeoutSeconds:          &c.defaultTimeout,
 				SideEffects:             &noneOnDryRun,
 				ReinvocationPolicy:      &ifNeeded,
+				AdmissionReviewVersions: []string{"v1"},
+				MatchPolicy:             ptr.To(admissionregistrationv1.Equivalent),
+			}},
+		},
+		nil
+}
+
+func (c *controller) buildLicenseValidatingWebhookConfiguration(_ context.Context, cfg config.Configuration, caBundle []byte) (*admissionregistrationv1.ValidatingWebhookConfiguration, error) {
+	rules := make([]admissionregistrationv1.RuleWithOperations, 0, len(licensedPolicyRules))
+	for _, rule := range licensedPolicyRules {
+		rules = append(rules, admissionregistrationv1.RuleWithOperations{
+			Rule:       rule,
+			Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+		})
+	}
+	return &admissionregistrationv1.ValidatingWebhookConfiguration{
+			ObjectMeta: objectMeta(config.LicenseValidatingWebhookConfigurationName, cfg.GetWebhookAnnotations(), cfg.GetWebhookLabels(), c.buildOwner()...),
+			Webhooks: []admissionregistrationv1.ValidatingWebhook{{
+				Name:                    config.LicenseValidatingWebhookName,
+				ClientConfig:            newClientConfig(c.server, c.servicePort, caBundle, config.LicenseValidatingWebhookServicePath),
+				Rules:                   rules,
+				FailurePolicy:           &ignore,
+				TimeoutSeconds:          &c.defaultTimeout,
+				SideEffects:             &none,
 				AdmissionReviewVersions: []string{"v1"},
 				MatchPolicy:             ptr.To(admissionregistrationv1.Equivalent),
 			}},

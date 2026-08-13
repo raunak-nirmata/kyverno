@@ -63,6 +63,8 @@ var (
 	leaderElectionRetryPeriod time.Duration
 	// nirmata licensing
 	licenseEvaluationInterval time.Duration
+	licensePath               string
+	licenseWarnRatio          float64
 	// cleanupServer port and host for listening address
 	cleanupServerHost string
 	cleanupServerPort int
@@ -187,6 +189,13 @@ func initNirmataLicensingFlags() {
 	flag.DurationVar(&licenseEvaluationInterval, "licenseEvaluationInterval", license.DefaultInterval,
 		"Interval at which Nirmata license state is evaluated. Clamped to between "+
 			license.MinInterval.String()+" and "+license.MaxInterval.String()+".")
+	flag.StringVar(&licensePath, "licensePath", "",
+		"Path to an operator-supplied Nirmata commercial license file. "+
+			"When empty, the embedded free-tier community license is used. "+
+			"Typical chart mount: "+license.DefaultLicensePath)
+	flag.Float64Var(&licenseWarnRatio, "licenseWarnRatio", license.DefaultWarnRatio,
+		"Capacity utilization fraction, in (0, 1], at which the Nirmata license state "+
+			"enters Warning. Values outside that range fall back to the default.")
 }
 
 func initCleanupFlags() {

@@ -15,6 +15,7 @@ import (
 const (
 	metricState      = "kyverno_nirmata_license_state"
 	metricInfo       = "kyverno_nirmata_license_info"
+	metricValid      = "kyverno_nirmata_license_valid"
 	metricPolicies   = "kyverno_nirmata_license_policies_used"
 	metricPolicyCap  = "kyverno_nirmata_license_policies_allowed"
 	metricNodeUnits  = "kyverno_nirmata_license_node_units_used"
@@ -32,6 +33,7 @@ type instruments struct {
 
 	state      metric.Int64Gauge
 	info       metric.Int64Gauge
+	valid      metric.Int64Gauge
 	policies   metric.Int64Gauge
 	policyCap  metric.Int64Gauge
 	nodeUnits  metric.Int64Gauge
@@ -64,6 +66,7 @@ func newInstruments(provider metric.MeterProvider, logger logr.Logger) *instrume
 
 	in.state = gauge(metricState, "One-hot indicator of the current N4K license state.")
 	in.info = gauge(metricInfo, "Static labels describing the active N4K license. Always 1.")
+	in.valid = gauge(metricValid, "1 when the N4K license posture is Licensed, Warning, or FreeTier; 0 otherwise.")
 	in.policies = gauge(metricPolicies, "Number of Kyverno policies currently installed.")
 	in.policyCap = gauge(metricPolicyCap, "Licensed policy limit; -1 when unlimited.")
 	in.nodeUnits = gauge(metricNodeUnits, "Licensed node units currently consumed by the cluster.")
@@ -105,9 +108,11 @@ func (in *instruments) record(ctx context.Context, snap Snapshot, active Active)
 			attribute.String("license_id", active.Claims.LicenseID),
 			attribute.String("origin", string(active.Origin)),
 			attribute.Bool("commercial", active.Commercial),
+			attribute.Bool("invalid", active.Invalid),
 		))
 	}
 
+	set(ctx, in.valid, boolToInt64(snap.State.IsValid()))
 	set(ctx, in.policies, int64(snap.Inputs.PolicyCount))
 	set(ctx, in.policyCap, snap.Inputs.Limits.Policies.MetricValue())
 	set(ctx, in.nodeUnits, int64(snap.Inputs.NodeUnitCount))

@@ -45,6 +45,7 @@ import (
 	"github.com/kyverno/kyverno/pkg/leaderelection"
 	"github.com/kyverno/kyverno/pkg/logging"
 	"github.com/kyverno/kyverno/pkg/metrics"
+	"github.com/kyverno/kyverno/pkg/nirmata/license"
 	"github.com/kyverno/kyverno/pkg/policycache"
 	"github.com/kyverno/kyverno/pkg/tls"
 	"github.com/kyverno/kyverno/pkg/toggle"
@@ -56,6 +57,7 @@ import (
 	webhookscelexception "github.com/kyverno/kyverno/pkg/webhooks/celexception"
 	webhooksexception "github.com/kyverno/kyverno/pkg/webhooks/exception"
 	webhooksglobalcontext "github.com/kyverno/kyverno/pkg/webhooks/globalcontext"
+	webhookslicense "github.com/kyverno/kyverno/pkg/webhooks/license"
 	webhookspolicy "github.com/kyverno/kyverno/pkg/webhooks/policy"
 	webhooksresource "github.com/kyverno/kyverno/pkg/webhooks/resource"
 	"github.com/kyverno/kyverno/pkg/webhooks/resource/gpol"
@@ -521,6 +523,13 @@ func main() {
 		kubeInformer := kubeinformers.NewSharedInformerFactory(setup.KubeClient, setup.ResyncPeriod)
 		kubeKyvernoInformer := kubeinformers.NewSharedInformerFactoryWithOptions(setup.KubeClient, setup.ResyncPeriod, kubeinformers.WithNamespace(config.KyvernoNamespace()))
 		kyvernoInformer := kyvernoinformer.NewSharedInformerFactory(setup.KyvernoClient, setup.ResyncPeriod)
+
+		// Own factory, kept out of the cache-sync barriers below: those os.Exit(1),
+		// and an informer for an absent CRD never syncs. Unsynced counter reports
+		// ok=false and the gate falls back to the evaluated count.
+		licenseInformer := kyvernoinformer.NewSharedInformerFactory(setup.KyvernoClient, setup.ResyncPeriod)
+		license.SetPolicyCounter(newLicensePolicyCounter(licenseInformer))
+		licenseInformer.Start(signalCtx.Done())
 		certRenewer := tls.NewCertRenewer(
 			setup.KubeClient.CoreV1().Secrets(config.KyvernoNamespace()),
 			tls.CertRenewalInterval,
@@ -712,6 +721,7 @@ func main() {
 			backgroundServiceAccountName,
 			reportsServiceAccountName,
 		)
+		licenseHandlers := webhookslicense.NewHandlers()
 
 		contextProvider, err := libs.NewContextProvider(
 			setup.KyvernoDynamicClient,
@@ -914,6 +924,9 @@ func main() {
 			webhooks.PolicyHandlers{
 				Mutation:   webhooks.HandlerFunc(policyHandlers.Mutate),
 				Validation: webhooks.HandlerFunc(policyHandlers.Validate),
+			},
+			webhooks.LicenseHandlers{
+				Validation: webhooks.HandlerFunc(licenseHandlers.Validate),
 			},
 			webhooks.ResourceHandlers{
 				Mutation:                          webhooks.HandlerFunc(resourceHandlers.Mutate),

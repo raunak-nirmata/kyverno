@@ -60,9 +60,9 @@ func TestCountPoliciesCoversEveryKind(t *testing.T) {
 	t.Parallel()
 
 	scheme := policyScheme(t)
-	objs := make([]runtime.Object, 0, len(policyGVRs))
-	for i, gvr := range policyGVRs {
-		objs = append(objs, policyObj(t, gvr, "default", fmt.Sprintf("policy-%d", i)))
+	objs := make([]runtime.Object, 0, len(policyResources))
+	for i, resource := range policyResources {
+		objs = append(objs, policyObj(t, resource.primaryGVR(), "default", fmt.Sprintf("policy-%d", i)))
 	}
 	client := metadatafake.NewSimpleMetadataClient(scheme, objs...)
 
@@ -70,15 +70,15 @@ func TestCountPoliciesCoversEveryKind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Total != len(policyGVRs) {
-		t.Errorf("Total = %d, want %d (one per kind)", got.Total, len(policyGVRs))
+	if got.Total != len(policyResources) {
+		t.Errorf("Total = %d, want %d (one per kind)", got.Total, len(policyResources))
 	}
 	if len(got.Unavailable) != 0 {
 		t.Errorf("Unavailable = %v, want none", got.Unavailable)
 	}
-	for _, gvr := range policyGVRs {
-		if got.ByKind[gvr.Resource] != 1 {
-			t.Errorf("ByKind[%s] = %d, want 1", gvr.Resource, got.ByKind[gvr.Resource])
+	for _, resource := range policyResources {
+		if got.ByKind[resource.Resource] != 1 {
+			t.Errorf("ByKind[%s] = %d, want 1", resource.Resource, got.ByKind[resource.Resource])
 		}
 	}
 }
@@ -99,7 +99,7 @@ func TestCountPoliciesToleratesMissingKinds(t *testing.T) {
 			t.Parallel()
 			scheme := policyScheme(t)
 			client := metadatafake.NewSimpleMetadataClient(scheme,
-				policyObj(t, policyGVRs[0], "", "cpol-a"),
+				policyObj(t, policyResources[0].primaryGVR(), "", "cpol-a"),
 			)
 			client.PrependReactor("list", "deletingpolicies", func(k8stesting.Action) (bool, runtime.Object, error) {
 				return true, nil, tc.err
@@ -148,31 +148,35 @@ func TestCountPoliciesEmptyCluster(t *testing.T) {
 	}
 }
 
-// The GVR list is the contract for what counts as a policy; guard against a kind
-// being dropped or duplicated by an edit.
-func TestPolicyGVRsAreCompleteAndUnique(t *testing.T) {
+// The resource list is the contract for what counts as a policy; guard against a
+// kind being dropped or duplicated by an edit.
+func TestPolicyResourcesAreCompleteAndUnique(t *testing.T) {
 	t.Parallel()
 
-	seen := map[schema.GroupVersionResource]bool{}
-	for _, gvr := range policyGVRs {
-		if seen[gvr] {
-			t.Errorf("duplicate GVR %v", gvr)
+	seen := map[schema.GroupResource]bool{}
+	for _, resource := range policyResources {
+		gr := schema.GroupResource{Group: resource.Group, Resource: resource.Resource}
+		if seen[gr] {
+			t.Errorf("duplicate resource %v", gr)
 		}
-		seen[gvr] = true
+		seen[gr] = true
+		if len(resource.Versions) == 0 {
+			t.Errorf("%v lists no candidate versions", gr)
+		}
 	}
-	if len(policyGVRs) != 12 {
-		t.Errorf("policyGVRs has %d entries, want 12; update this test deliberately if a Kyverno policy kind was added", len(policyGVRs))
+	if len(policyResources) != 12 {
+		t.Errorf("policyResources has %d entries, want 12; update this test deliberately if a Kyverno policy kind was added", len(policyResources))
 	}
 	for _, want := range []string{"clusterpolicies", "policies", "validatingpolicies", "deletingpolicies"} {
 		found := false
-		for _, gvr := range policyGVRs {
-			if gvr.Resource == want {
+		for _, resource := range policyResources {
+			if resource.Resource == want {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Errorf("%s missing from policyGVRs", want)
+			t.Errorf("%s missing from policyResources", want)
 		}
 	}
 }
@@ -186,10 +190,10 @@ func TestCountPoliciesFailsWhenNoKindIsListable(t *testing.T) {
 
 	scheme := policyScheme(t)
 	client := metadatafake.NewSimpleMetadataClient(scheme)
-	for _, gvr := range policyGVRs {
-		client.PrependReactor("list", gvr.Resource, func(k8stesting.Action) (bool, runtime.Object, error) {
+	for _, resource := range policyResources {
+		client.PrependReactor("list", resource.Resource, func(k8stesting.Action) (bool, runtime.Object, error) {
 			return true, nil, apierrors.NewForbidden(
-				schema.GroupResource{Resource: gvr.Resource}, "", errors.New("no permission"))
+				schema.GroupResource{Resource: resource.Resource}, "", errors.New("no permission"))
 		})
 	}
 
@@ -197,7 +201,7 @@ func TestCountPoliciesFailsWhenNoKindIsListable(t *testing.T) {
 	if err == nil {
 		t.Fatal("a total RBAC loss must be reported, not published as a count of zero")
 	}
-	if len(got.Unavailable) != len(policyGVRs) {
-		t.Errorf("Unavailable has %d entries, want all %d", len(got.Unavailable), len(policyGVRs))
+	if len(got.Unavailable) != len(policyResources) {
+		t.Errorf("Unavailable has %d entries, want all %d", len(got.Unavailable), len(policyResources))
 	}
 }

@@ -63,6 +63,14 @@ type Options struct {
 	// Interval overrides DefaultInterval. Clamped to [MinInterval, MaxInterval].
 	Interval time.Duration
 
+	// LicensePath is an optional path to an operator-supplied commercial license
+	// file. Empty means community/free-tier only.
+	LicensePath string
+
+	// WarnRatio overrides DefaultWarnRatio, the capacity utilization fraction at
+	// which a bounded cap starts warning. Zero or out of (0, 1] means the default.
+	WarnRatio float64
+
 	// Now is injected so tests are deterministic. Nil means time.Now.
 	Now func() time.Time
 }

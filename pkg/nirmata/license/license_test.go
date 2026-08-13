@@ -484,19 +484,23 @@ func TestEventsReachTheDeployment(t *testing.T) {
 	}
 }
 
-func TestLimitEventMessageStatesNothingIsBlocked(t *testing.T) {
+func TestLimitEventMessageReflectsEnforcement(t *testing.T) {
 	t.Parallel()
 
-	info := limitEvent(corev1.ObjectReference{Name: "x"}, "policy", 11, Bound(10))
-	if info.Type != corev1.EventTypeWarning {
+	enforced := limitEvent(corev1.ObjectReference{Name: "x"}, "policy", 11, Bound(10), FreeExpired)
+	if enforced.Type != corev1.EventTypeWarning {
 		t.Error("a capacity overrun should be a Warning")
 	}
-	// An operator seeing this must be able to tell whether the cluster is impaired.
-	if !strings.Contains(info.Message, "unaffected") {
-		t.Errorf("the message must state that enforcement is unaffected, got %q", info.Message)
+	if !strings.Contains(enforced.Message, "refused") {
+		t.Errorf("FreeExpired message must mention refusal, got %q", enforced.Message)
 	}
-	if !strings.Contains(info.Message, "11") || !strings.Contains(info.Message, "10") {
-		t.Errorf("the message must state used and permitted counts, got %q", info.Message)
+	if !strings.Contains(enforced.Message, "11") || !strings.Contains(enforced.Message, "10") {
+		t.Errorf("the message must state used and permitted counts, got %q", enforced.Message)
+	}
+
+	grace := limitEvent(corev1.ObjectReference{Name: "x"}, "policy", 11, Bound(10), Grace)
+	if !strings.Contains(grace.Message, "preserved") {
+		t.Errorf("Grace message must mention preserved function, got %q", grace.Message)
 	}
 }
 
@@ -551,12 +555,15 @@ func TestCurrentBeforeFirstEvaluation(t *testing.T) {
 func TestGVRListDoesNotIncludeNonPolicyKinds(t *testing.T) {
 	t.Parallel()
 
-	for _, gvr := range policyGVRs {
-		if gvr.Group != "kyverno.io" && gvr.Group != "policies.kyverno.io" {
-			t.Errorf("unexpected group %q in the policy count list", gvr.Group)
+	for _, resource := range policyResources {
+		if resource.Group != "kyverno.io" && resource.Group != "policies.kyverno.io" {
+			t.Errorf("unexpected group %q in the policy count list", resource.Group)
 		}
-		if _, err := schema.ParseGroupVersion(gvr.GroupVersion().String()); err != nil {
-			t.Errorf("invalid GroupVersion for %v: %v", gvr, err)
+		for _, version := range resource.Versions {
+			gvr := schema.GroupVersionResource{Group: resource.Group, Version: version, Resource: resource.Resource}
+			if _, err := schema.ParseGroupVersion(gvr.GroupVersion().String()); err != nil {
+				t.Errorf("invalid GroupVersion for %v: %v", gvr, err)
+			}
 		}
 	}
 }
@@ -748,5 +755,45 @@ func TestUnprovisionedBuildReportsNoStateWithoutErroring(t *testing.T) {
 			t.Errorf("unprovisioned build performed a write: %s %s",
 				action.GetVerb(), action.GetResource().Resource)
 		}
+	}
+}
+
+// A failed ConfigMap read must not restart an ongoing grace window.
+//
+// On that path the clockState is the zero value while Inputs.GraceStartedAt still
+// carries the anchor forward from the previous snapshot. Sourcing the anchor from
+// the clock instead would re-stamp it to now on every failed read, so a cluster
+// with a flaky API server would sit in Grace forever and never reach Degraded.
+// Not parallel: writes the package global current, as does TestAdmitPolicyCreate.
+func TestGraceAnchorSurvivesAClockReadFailure(t *testing.T) {
+	started := base.Add(-days(20))
+	s, client := newTestService(t, []runtime.Object{leaseFor(config.KyvernoPodName())}, base)
+	s.load = func(time.Time) (Active, error) {
+		return Active{
+			Origin:  OriginFile,
+			Invalid: true,
+			Limits:  Limits{Policies: Unlimited(), NodeUnits: Unlimited(), Grace: days(30)},
+		}, nil
+	}
+	// Seed a snapshot that is already in Grace, anchored 20 days ago.
+	s.store(&Snapshot{
+		State:  Grace,
+		Inputs: Inputs{GraceStartedAt: started},
+	})
+	// Every ConfigMap read fails, so readOrCreateClock returns a zero clockState.
+	client.PrependReactor("get", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewInternalError(errors.New("apiserver unreachable"))
+	})
+	client.PrependReactor("create", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewInternalError(errors.New("apiserver unreachable"))
+	})
+
+	s.tick(context.Background())
+
+	got := Current()
+	t.Cleanup(func() { current.Store(nil) })
+	if !got.Inputs.GraceStartedAt.Equal(started) {
+		t.Errorf("GraceStartedAt = %v, want the original anchor %v; a failed read re-stamped it",
+			got.Inputs.GraceStartedAt, started)
 	}
 }

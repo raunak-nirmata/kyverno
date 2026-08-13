@@ -37,5 +37,7 @@ func setupLicense(
 		Config:         configuration,
 		Namespace:      config.KyvernoNamespace(),
 		Interval:       licenseEvaluationInterval,
+		LicensePath:    licensePath,
+		WarnRatio:      licenseWarnRatio,
 	})
 }

@@ -75,18 +75,22 @@ func stateEvent(ref corev1.ObjectReference, from, to State, snap Snapshot) event
 	}
 }
 
-// limitEvent describes a capacity overrun. The message states outright that nothing
-// is blocked, which is true in this phase and is what the operator needs to know.
-func limitEvent(ref corev1.ObjectReference, resource string, used int, cap Cap) event.Info {
+// limitEvent describes a capacity overrun.
+func limitEvent(ref corev1.ObjectReference, resource string, used int, cap Cap, state State) event.Info {
+	msg := fmt.Sprintf(
+		"Nirmata licensed %s limit exceeded: %d in use, %s permitted (state=%s).",
+		resource, used, cap, state)
+	if state.EnforcesPolicyCap() {
+		msg += " New over-cap policy creates will be refused; existing policies continue to enforce."
+	} else {
+		msg += " Full function is preserved during warning/grace; contact Nirmata to extend the license."
+	}
 	return event.Info{
 		Regarding: ref,
 		Reason:    reasonLicenseLimit,
-		Message: fmt.Sprintf(
-			"Nirmata licensed %s limit exceeded: %d in use, %s permitted. "+
-				"Policy enforcement is unaffected; contact Nirmata to extend the license.",
-			resource, used, cap),
-		Action: event.None,
-		Source: sourceLicense,
-		Type:   corev1.EventTypeWarning,
+		Message:   msg,
+		Action:    event.None,
+		Source:    sourceLicense,
+		Type:      corev1.EventTypeWarning,
 	}
 }
