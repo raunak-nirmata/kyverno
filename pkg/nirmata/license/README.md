@@ -74,6 +74,14 @@ barriers in `main.go` (which `os.Exit(1)` on failure). An informer for an absent
 CRD never syncs, so sharing the barrier would let a missing policy CRD stop
 admission from starting — licensing must never be why admission is down.
 
+Every counted kind needs both `list` and `watch` in the admission controller RBAC.
+Ten come from the core ClusterRole; `deletingpolicies` and
+`namespaceddeletingpolicies` come only from
+`charts/kyverno/templates/admission-controller/clusterrole-licensing.yaml`. Denying
+`watch` is not loud: the informer lists once then retries forever, so the counter
+stays unsynced and the gate falls back to the stale evaluated count. A kind added to
+`policyResources` must be added there too.
+
 The cap is a **capacity control, not an atomic quota.** Admission reads a count the
 informer cache has yet to catch up with, so `AdmitPolicyCreate` also counts the
 CREATEs this process admitted but has not yet observed (`inFlight`). That closes
