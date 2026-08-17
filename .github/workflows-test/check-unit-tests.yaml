@@ -77,20 +77,3 @@ jobs:
         fail_ci_if_error: true
         verbose: true
         use_oidc: true
-
-  sync-issue:
-    if: always() && github.event_name == 'push'
-    needs:
-      - tests
-      - upload-to-codecov
-    permissions:
-      issues: write
-    runs-on: ubuntu-slim
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Sync issue
-        uses: ./.github/actions/workflow/failure-issue
-        with:
-          conclusion: ${{ contains(needs.*.result, 'failure') && 'failure' || job.status }}
-          needs: ${{ toJSON(needs) }}

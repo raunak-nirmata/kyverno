@@ -48,19 +48,3 @@ jobs:
           $CLI_PATH test ./test/cli/test-fail/missing-policy && exit 1 || exit 0
           $CLI_PATH test ./test/cli/test-fail/missing-rule && exit 1 || exit 0
           $CLI_PATH test ./test/cli/test-fail/missing-resource && exit 1 || exit 0
-
-  sync-issue:
-    if: always() && github.event_name == 'push'
-    needs:
-      - check
-    permissions:
-      issues: write
-    runs-on: ubuntu-slim
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Sync issue
-        uses: ./.github/actions/workflow/failure-issue
-        with:
-          conclusion: ${{ contains(needs.*.result, 'failure') && 'failure' || job.status }}
-          needs: ${{ toJSON(needs) }}
