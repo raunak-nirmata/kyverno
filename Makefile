@@ -45,6 +45,23 @@ REPO_CLEANUP_FIPS         := $(REGISTRY)/$(REPO)/$(CLEANUP_IMAGE_FIPS)
 REPO_REPORTS_FIPS         := $(REGISTRY)/$(REPO)/$(REPORTS_IMAGE_FIPS)
 REPO_BACKGROUND_FIPS      := $(REGISTRY)/$(REPO)/$(BACKGROUND_IMAGE_FIPS)
 
+# OCI image annotations applied to every published image.
+IMAGE_AUTHORS        ?= Nirmata, Inc
+IMAGE_VENDOR         ?= Nirmata, Inc
+IMAGE_SOURCE_REPO    ?= github.com/nirmata/enterprise-kyverno
+IMAGE_SOURCE         ?= $(IMAGE_SOURCE_REPO)/commit/$(GIT_SHA)
+
+# $(call ko_annotations,<image repository>) -> --image-annotation flags for ko.
+# ko parses annotation values as CSV, so a value containing a comma (e.g. the
+# vendor "Nirmata, Inc") is split into two entries and the publish fails with
+# `missing '=' in annotation`. Each pair is wrapped in literal double quotes so
+# the CSV reader treats it as a single field.
+ko_annotations = \
+	--image-annotation '"org.opencontainers.image.authors=$(IMAGE_AUTHORS)"' \
+	--image-annotation '"org.opencontainers.image.source=$(IMAGE_SOURCE)"' \
+	--image-annotation '"org.opencontainers.image.vendor=$(IMAGE_VENDOR)"' \
+	--image-annotation '"org.opencontainers.image.url=$(1)"'
+
 USE_CONFIG           ?= standard
 INSTALL_VERSION	     ?= 3.2.6
 
@@ -557,43 +574,43 @@ ko-login: $(KO)
 ko-publish-kyverno-init: ko-login ## Build and publish kyvernopre image (with ko)
 	@LD_FLAGS=$(LD_FLAGS) KOCACHE=$(KOCACHE) KO_DOCKER_REPO=$(REPO_KYVERNOPRE) \
 		$(KO) build ./$(KYVERNOPRE_DIR) --bare --tags=$(KO_TAGS) --platform=$(PLATFORMS) \
-		--image-annotation 'org.opencontainers.image.authors'='The Kyverno team','org.opencontainers.image.source'='github.com/kyverno/kyverno/commit/${GIT_SHA}','org.opencontainers.image.vendor'='Kyverno','org.opencontainers.image.url'='ghcr.io/kyverno/kyvernopre'
+		$(call ko_annotations,$(REPO_KYVERNOPRE))
 
 .PHONY: ko-publish-kyverno
 ko-publish-kyverno: ko-login ## Build and publish kyverno image (with ko)
 	@LD_FLAGS=$(LD_FLAGS) KOCACHE=$(KOCACHE) KO_DOCKER_REPO=$(REPO_KYVERNO) \
 		$(KO) build ./$(KYVERNO_DIR) --bare --tags=$(KO_TAGS) --platform=$(PLATFORMS) \
-		--image-annotation 'org.opencontainers.image.authors'='The Kyverno team','org.opencontainers.image.source'='github.com/kyverno/kyverno/commit/${GIT_SHA}','org.opencontainers.image.vendor'='Kyverno','org.opencontainers.image.url'='ghcr.io/kyverno/kyverno'
+		$(call ko_annotations,$(REPO_KYVERNO))
 
 .PHONY: ko-publish-cli
 ko-publish-cli: ko-login ## Build and publish cli image (with ko)
 	@LD_FLAGS=$(LD_FLAGS) KOCACHE=$(KOCACHE) KO_DOCKER_REPO=$(REPO_CLI) \
 		$(KO) build ./$(CLI_DIR) --bare --tags=$(KO_TAGS) --platform=$(PLATFORMS) \
-		--image-annotation 'org.opencontainers.image.authors'='The Kyverno Team','org.opencontainers.image.source'='github.com/kyverno/kyverno/commit/${GIT_SHA}','org.opencontainers.image.vendor'='Kyverno','org.opencontainers.image.url'='ghcr.io/kyverno/kyverno-cli'
+		$(call ko_annotations,$(REPO_CLI))
 
 .PHONY: ko-publish-cleanup-controller
 ko-publish-cleanup-controller: ko-login ## Build and publish cleanup controller image (with ko)
 	@LD_FLAGS=$(LD_FLAGS) KOCACHE=$(KOCACHE) KO_DOCKER_REPO=$(REPO_CLEANUP) \
 		$(KO) build ./$(CLEANUP_DIR) --bare --tags=$(KO_TAGS) --platform=$(PLATFORMS) \
-		--image-annotation 'org.opencontainers.image.authors'='The Kyverno Team','org.opencontainers.image.source'='github.com/kyverno/kyverno/commit/${GIT_SHA}','org.opencontainers.image.vendor'='Kyverno','org.opencontainers.image.url'='ghcr.io/kyverno/cleanup-controller'
+		$(call ko_annotations,$(REPO_CLEANUP))
 
 .PHONY: ko-publish-reports-controller
 ko-publish-reports-controller: ko-login ## Build and publish reports controller image (with ko)
 	@LD_FLAGS=$(LD_FLAGS) KOCACHE=$(KOCACHE) KO_DOCKER_REPO=$(REPO_REPORTS) \
 		$(KO) build ./$(REPORTS_DIR) --bare --tags=$(KO_TAGS) --platform=$(PLATFORMS) \
-		--image-annotation 'org.opencontainers.image.authors'='The Kyverno team','org.opencontainers.image.source'='github.com/kyverno/kyverno/commit/${GIT_SHA}','org.opencontainers.image.vendor'='Kyverno','org.opencontainers.image.url'='ghcr.io/kyverno/reports-controller'
+		$(call ko_annotations,$(REPO_REPORTS))
 
 .PHONY: ko-publish-background-controller
 ko-publish-background-controller: ko-login ## Build and publish background controller image (with ko)
 	@LD_FLAGS=$(LD_FLAGS) KOCACHE=$(KOCACHE) KO_DOCKER_REPO=$(REPO_BACKGROUND) \
 		$(KO) build ./$(BACKGROUND_DIR) --bare --tags=$(KO_TAGS) --platform=$(PLATFORMS) \
-		--image-annotation 'org.opencontainers.image.authors'='The Kyverno team','org.opencontainers.image.source'='github.com/kyverno/kyverno/commit/${GIT_SHA}','org.opencontainers.image.vendor'='Kyverno','org.opencontainers.image.url'='ghcr.io/kyverno/background-controller'
+		$(call ko_annotations,$(REPO_BACKGROUND))
 
 .PHONY: ko-publish-readiness-checker
 ko-publish-readiness-checker: ko-login ## Build and publish readiness-checker image (with ko)
 	@LD_FLAGS=$(LD_FLAGS) KOCACHE=$(KOCACHE) KO_DOCKER_REPO=$(REPO_READINESS) \
 		$(KO) build ./$(READINESS_DIR) --bare --tags=$(KO_TAGS) --platform=$(PLATFORMS) \
-		--image-annotation 'org.opencontainers.image.authors'='The Kyverno team','org.opencontainers.image.source'='github.com/kyverno/kyverno/commit/${GIT_SHA}','org.opencontainers.image.vendor'='Kyverno','org.opencontainers.image.url'='ghcr.io/kyverno/readiness-checker'
+		$(call ko_annotations,$(REPO_READINESS))
 
 .PHONY: ko-publish-all
 ko-publish-all: ko-publish-kyverno-init ko-publish-kyverno ko-publish-cli ko-publish-cleanup-controller ko-publish-reports-controller ko-publish-background-controller ko-publish-readiness-checker ## Build and publish all images (with ko)
