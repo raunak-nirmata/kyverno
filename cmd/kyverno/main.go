@@ -853,20 +853,52 @@ func main() {
 			}
 			// Start with the breaker closed (dropping) until reports-server signals it is ready.
 			dropBreaker()
+			// sessionCancel is only ever read/written from the reports-server-watcher
+			// goroutine (WatchReportsServerReady invokes onReady/onNotReady serially,
+			// never concurrently), so it needs no locking of its own.
+			var sessionCancel context.CancelFunc
+			onReady := func(ctx context.Context) {
+				if sessionCancel != nil {
+					sessionCancel()
+				}
+				sctx, cancel := context.WithCancel(ctx)
+				sessionCancel = cancel
+				// Transition-only notifications mean onReady fires once per
+				// availability transition, not on every reconnect, so retry
+				// counter setup explicitly instead of relying on the next
+				// reconnect to paper over a failed StartAdmissionReportsCounter.
+				go func() {
+					for {
+						ephrs, err := breaker.StartAdmissionReportsCounter(sctx, setup.MetadataClient)
+						if err == nil {
+							breaker.SetReportsBreaker(breaker.NewBreaker("admission reports", ephrCounterFunc(ephrs)))
+							return
+						}
+						setup.Logger.Error(err, "failed to start admission reports counter; allowing writes without threshold, retrying in 5s")
+						breaker.SetReportsBreaker(breaker.NewBreaker("admission reports (pass-through)", func(context.Context) bool {
+							return false
+						}))
+						select {
+						case <-sctx.Done():
+							return
+						case <-time.After(5 * time.Second):
+						}
+					}
+				}()
+			}
+			onNotReady := func() {
+				if sessionCancel != nil {
+					sessionCancel()
+					sessionCancel = nil
+				}
+				dropBreaker()
+			}
 			breaker.WatchReportsServerReady(
 				signalCtx,
 				setup.Logger.WithName("reports-server-watcher"),
 				setup.AggregatorClient,
-				func(ctx context.Context) {
-					ephrs, err := breaker.StartAdmissionReportsCounter(ctx, setup.MetadataClient)
-					if err != nil {
-						setup.Logger.Error(err, "failed to start admission reports counter after reports-server became ready")
-						dropBreaker()
-						return
-					}
-					breaker.SetReportsBreaker(breaker.NewBreaker("admission reports", ephrCounterFunc(ephrs)))
-				},
-				dropBreaker,
+				onReady,
+				onNotReady,
 			)
 			// admission reports are disabled, create a fake breaker by default
 		} else {

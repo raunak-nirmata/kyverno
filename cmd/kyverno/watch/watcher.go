@@ -13,11 +13,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/dump"
 	"k8s.io/apimachinery/pkg/util/net"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 )
+
+// maxRestartDelay caps the exponential backoff receive() applies between
+// consecutive rounds that fail to establish a watch connection.
+const maxRestartDelay = 30 * time.Second
 
 // resourceVersionGetter is an interface used to get resource version from events.
 // We can't reuse an interface from meta otherwise it would be a cyclic dependency and we need just this one method
@@ -86,7 +89,10 @@ func (rw *RetryWatcher) send(event watch.Event) bool {
 
 // doReceive returns true when it is done, false otherwise.
 // If it is not done the second return value holds the time to wait before calling it again.
-func (rw *RetryWatcher) doReceive() (bool, time.Duration) {
+// The third return value reports whether this round actually established a
+// watch connection (i.e. isRunning was set), which receive() uses to decide
+// whether to reset its exponential backoff.
+func (rw *RetryWatcher) doReceive() (bool, time.Duration, bool) {
 	rw.mu.RLock()
 	currentRV := rw.lastResourceVersion
 	rw.mu.RUnlock()
@@ -107,29 +113,29 @@ func (rw *RetryWatcher) doReceive() (bool, time.Duration) {
 
 	case io.EOF:
 		// watch closed normally
-		return false, 0
+		return false, 0, false
 
 	case io.ErrUnexpectedEOF:
 		klog.V(1).InfoS("Watch closed with unexpected EOF", "err", err)
-		return false, 0
+		return false, 0, false
 
 	default:
 		msg := "Watch failed"
 		if net.IsProbableEOF(err) || net.IsTimeout(err) {
 			klog.V(5).InfoS(msg, "err", err)
 			// Retry
-			return false, 0
+			return false, 0, false
 		}
 
 		klog.ErrorS(err, msg)
 		// Retry
-		return false, 0
+		return false, 0, false
 	}
 
 	if watcher == nil {
 		klog.ErrorS(nil, "Watch returned nil watcher")
 		// Retry
-		return false, 0
+		return false, 0, false
 	}
 
 	ch := watcher.ResultChan()
@@ -144,13 +150,13 @@ func (rw *RetryWatcher) doReceive() (bool, time.Duration) {
 		select {
 		case <-rw.stopChan:
 			klog.V(4).InfoS("Stopping RetryWatcher.")
-			return true, 0
+			return true, 0, true
 		case event, ok := <-ch:
 			if !ok {
 				rw.mu.RLock()
 				klog.V(4).InfoS("Failed to get event! Re-creating the watcher.", "resourceVersion", rw.lastResourceVersion)
 				rw.mu.RUnlock()
-				return false, 0
+				return false, 0, true
 			}
 
 			// We need to inspect the event and get ResourceVersion out of it
@@ -163,7 +169,7 @@ func (rw *RetryWatcher) doReceive() (bool, time.Duration) {
 						Object: &apierrors.NewInternalError(errors.New("retryWatcher: doesn't support resourceVersion")).ErrStatus,
 					})
 					// We have to abort here because this might cause lastResourceVersion inconsistency by skipping a potential RV with valid data!
-					return true, 0
+					return true, 0, true
 				}
 
 				resourceVersion := metaObject.GetResourceVersion()
@@ -173,14 +179,14 @@ func (rw *RetryWatcher) doReceive() (bool, time.Duration) {
 						Object: &apierrors.NewInternalError(fmt.Errorf("retryWatcher: object %#v doesn't support resourceVersion", event.Object)).ErrStatus,
 					})
 					// We have to abort here because this might cause lastResourceVersion inconsistency by skipping a potential RV with valid data!
-					return true, 0
+					return true, 0, true
 				}
 
 				// All is fine; send the non-bookmark events and update resource version.
 				if event.Type != watch.Bookmark {
 					ok = rw.send(event)
 					if !ok {
-						return true, 0
+						return true, 0, true
 					}
 				}
 
@@ -197,7 +203,7 @@ func (rw *RetryWatcher) doReceive() (bool, time.Duration) {
 				if !ok {
 					klog.Error(fmt.Sprintf("Received an error which is not *metav1.Status but %s", dump.Pretty(event.Object)))
 					// Retry unknown errors
-					return false, 0
+					return false, 0, true
 				}
 
 				status := statusErr.ErrStatus
@@ -211,11 +217,11 @@ func (rw *RetryWatcher) doReceive() (bool, time.Duration) {
 				case http.StatusGone:
 					// Never retry RV too old errors
 					_ = rw.send(event)
-					return true, 0
+					return true, 0, true
 
 				case http.StatusGatewayTimeout, http.StatusInternalServerError:
 					// Retry
-					return false, statusDelay
+					return false, statusDelay, true
 
 				default:
 					// We retry by default. RetryWatcher is meant to proceed unless it is certain
@@ -227,7 +233,7 @@ func (rw *RetryWatcher) doReceive() (bool, time.Duration) {
 					klog.V(5).Info(fmt.Sprintf("Retrying after unexpected error: %s", dump.Pretty(event.Object)))
 
 					// Retry
-					return false, statusDelay
+					return false, statusDelay, true
 				}
 
 			default:
@@ -237,13 +243,20 @@ func (rw *RetryWatcher) doReceive() (bool, time.Duration) {
 					Object: &apierrors.NewInternalError(fmt.Errorf("retryWatcher failed to recognize Event type %q", event.Type)).ErrStatus,
 				})
 				// We are unable to restart the watch and have to stop the loop or this might cause lastResourceVersion inconsistency by skipping a potential RV with valid data!
-				return true, 0
+				return true, 0, true
 			}
 		}
 	}
 }
 
 // receive reads the result from a watcher, restarting it if necessary.
+//
+// Consecutive rounds that fail to even establish a watch connection back off
+// exponentially, starting at minRestartDelay and capping at maxRestartDelay,
+// so a reconnect storm against an unhealthy/unavailable apiserver doesn't
+// amplify into a hot retry loop. A round that does connect (streams events
+// for a while before dropping, e.g. a server-side watch timeout) is the
+// happy path: it resets the backoff and reconnects promptly, same as before.
 func (rw *RetryWatcher) receive() {
 	defer close(rw.doneChan)
 	defer close(rw.resultChan)
@@ -263,16 +276,31 @@ func (rw *RetryWatcher) receive() {
 		}
 	}()
 
-	// We use non sliding until so we don't introduce delays on happy path when WATCH call
-	// timeouts or gets closed and we need to reestablish it while also avoiding hot loops.
-	wait.NonSlidingUntilWithContext(ctx, func(ctx context.Context) {
-		done, retryAfter := rw.doReceive()
+	backoff := rw.minRestartDelay
+	for {
+		done, retryAfter, connected := rw.doReceive()
 		if done {
-			cancel()
 			return
 		}
 
-		timer := time.NewTimer(retryAfter)
+		sleepFor := retryAfter
+		if connected {
+			// Happy path: don't carry over any prior backoff.
+			if sleepFor < rw.minRestartDelay {
+				sleepFor = rw.minRestartDelay
+			}
+			backoff = rw.minRestartDelay
+		} else {
+			if sleepFor < backoff {
+				sleepFor = backoff
+			}
+			backoff *= 2
+			if backoff > maxRestartDelay {
+				backoff = maxRestartDelay
+			}
+		}
+
+		timer := time.NewTimer(sleepFor)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -283,7 +311,7 @@ func (rw *RetryWatcher) receive() {
 		rw.mu.RLock()
 		klog.V(4).Infof("Restarting RetryWatcher at RV=%q", rw.lastResourceVersion)
 		rw.mu.RUnlock()
-	}, rw.minRestartDelay)
+	}
 }
 
 // ResultChan implements Interface.

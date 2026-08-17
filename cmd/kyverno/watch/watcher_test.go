@@ -1,8 +1,10 @@
 package watch
 
 import (
+	"errors"
 	"io"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,16 +28,21 @@ func (f *fakeObj) GetResourceVersion() string { return f.rv }
 
 // fakeWatcherClient implements a minimal Watcher returning a sequence of watchers/errors.
 type fakeWatcherClient struct {
-	watchers []k8swatch.Interface
-	errs     []error
-	calls    int
-	opts     []metav1.ListOptions
+	mu        sync.Mutex
+	watchers  []k8swatch.Interface
+	errs      []error
+	calls     int
+	opts      []metav1.ListOptions
+	callTimes []time.Time
 }
 
 func (f *fakeWatcherClient) Watch(options metav1.ListOptions) (k8swatch.Interface, error) {
+	f.mu.Lock()
 	f.opts = append(f.opts, options)
+	f.callTimes = append(f.callTimes, time.Now())
 	idx := f.calls
 	f.calls++
+	f.mu.Unlock()
 	if idx < len(f.errs) && f.errs[idx] != nil {
 		return nil, f.errs[idx]
 	}
@@ -43,6 +50,13 @@ func (f *fakeWatcherClient) Watch(options metav1.ListOptions) (k8swatch.Interfac
 		return f.watchers[idx], nil
 	}
 	return k8swatch.NewRaceFreeFake(), nil
+}
+
+// times returns a snapshot of the recorded Watch() call timestamps.
+func (f *fakeWatcherClient) times() []time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]time.Time(nil), f.callTimes...)
 }
 
 func TestNewRetryWatcherRejectsEmptyOrZeroRV(t *testing.T) {
@@ -198,5 +212,82 @@ func TestRetryWatcherStop(t *testing.T) {
 	case <-rw.Done():
 	case <-time.After(1 * time.Second):
 		t.Fatalf("expected Done to be closed after Stop()")
+	}
+}
+
+// TestRetryWatcherBackoffGrowsAndResetsOnSuccess exercises the exponential
+// backoff added to receive(): consecutive rounds that fail to even connect
+// must back off with growing delays, and a round that does connect (streams
+// at least one event before dropping) must reset the backoff back down
+// instead of letting it keep growing.
+func TestRetryWatcherBackoffGrowsAndResetsOnSuccess(t *testing.T) {
+	const minDelay = 30 * time.Millisecond
+
+	fwConnected := k8swatch.NewRaceFreeFake()
+	fwConnected.Add(&fakeObj{rv: "2"})
+
+	fwAfterReset := k8swatch.NewRaceFreeFake()
+	fwAfterReset.Add(&fakeObj{rv: "3"})
+
+	fc := &fakeWatcherClient{
+		errs:     []error{errors.New("boom-1"), errors.New("boom-2"), errors.New("boom-3")},
+		watchers: []k8swatch.Interface{nil, nil, nil, fwConnected, fwAfterReset},
+	}
+
+	rw, err := newRetryWatcher("1", fc, minDelay)
+	if err != nil {
+		t.Fatalf("newRetryWatcher error: %v", err)
+	}
+	defer rw.Stop()
+
+	// The first event only arrives after 3 failed connection attempts, each
+	// waiting a progressively longer backoff.
+	select {
+	case ev := <-rw.ResultChan():
+		if ev.Type != k8swatch.Added {
+			t.Fatalf("expected Added event, got %v", ev.Type)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for event after retries")
+	}
+
+	times := fc.times()
+	if len(times) < 4 {
+		t.Fatalf("expected at least 4 Watch() calls (3 failures + 1 success), got %d", len(times))
+	}
+
+	gap1 := times[1].Sub(times[0])
+	gap2 := times[2].Sub(times[1])
+	gap3 := times[3].Sub(times[2])
+	t.Logf("backoff gaps before connecting: %v, %v, %v", gap1, gap2, gap3)
+
+	if gap2 < gap1+minDelay/2 {
+		t.Fatalf("expected backoff to grow between attempt 1 and 2: gap1=%v gap2=%v", gap1, gap2)
+	}
+	if gap3 < gap2+minDelay/2 {
+		t.Fatalf("expected backoff to keep growing between attempt 2 and 3: gap2=%v gap3=%v", gap2, gap3)
+	}
+
+	// End the connected round; the reconnect that follows should use the
+	// reset (~minDelay) backoff rather than continuing to grow from gap3.
+	fwConnected.Stop()
+
+	select {
+	case ev := <-rw.ResultChan():
+		if ev.Type != k8swatch.Added {
+			t.Fatalf("expected Added event after reset, got %v", ev.Type)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for event after backoff reset")
+	}
+
+	times = fc.times()
+	if len(times) < 5 {
+		t.Fatalf("expected a 5th Watch() call after the connected round ended, got %d", len(times))
+	}
+	gapAfterReset := times[4].Sub(times[3])
+	t.Logf("gap after a connected round: %v (gap3 was %v)", gapAfterReset, gap3)
+	if gapAfterReset >= gap3 {
+		t.Fatalf("expected backoff to reset to ~minDelay after a connected round, not continue growing: gap3=%v gapAfterReset=%v", gap3, gapAfterReset)
 	}
 }
