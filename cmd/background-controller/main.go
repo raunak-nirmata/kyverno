@@ -145,6 +145,8 @@ func main() {
 	flagset.Func(toggle.AllowHTTPInNamespacedPoliciesFlagName, toggle.AllowHTTPInNamespacedPoliciesDescription, toggle.AllowHTTPInNamespacedPolicies.Parse)
 	flagset.Func(toggle.HTTPBlocklistFlagName, toggle.HTTPBlocklistDescription, toggle.HTTPBlocklist.Parse)
 	flagset.Func(toggle.HTTPAllowlistFlagName, toggle.HTTPAllowlistDescription, toggle.HTTPAllowlist.Parse)
+	flagset.Func(toggle.APICallBlocklistFlagName, toggle.APICallBlocklistDescription, toggle.APICallBlocklist.Parse)
+	flagset.Func(toggle.APICallAllowlistFlagName, toggle.APICallAllowlistDescription, toggle.APICallAllowlist.Parse)
 
 	// config
 	appConfig := internal.NewConfiguration(

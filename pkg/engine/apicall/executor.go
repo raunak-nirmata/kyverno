@@ -134,6 +134,14 @@ func (a *executor) buildHTTPRequest(ctx context.Context, apiCall *kyvernov1.APIC
 		}
 	}
 
+	filter, err := newServiceCallFilter()
+	if err != nil {
+		return nil, err
+	}
+	if err := filter.validateURL(apiCall.Service.URL); err != nil {
+		return nil, fmt.Errorf("APICall %s: %w", a.name, err)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, string(apiCall.Method), apiCall.Service.URL, data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build request for APICall %s: %w", a.name, err)
@@ -161,26 +169,44 @@ func (a *executor) addHTTPHeaders(req *http.Request, headers []kyvernov1.HTTPHea
 }
 
 func (a *executor) buildHTTPClient(service *kyvernov1.ServiceCall) (*http.Client, error) {
-	timeout := a.config.GetTimeout()
-	if service == nil || service.CABundle == "" {
-		return &http.Client{
-			Timeout: timeout,
-		}, nil
+	filter, err := newServiceCallFilter()
+	if err != nil {
+		return nil, err
 	}
-	caCertPool := x509.NewCertPool()
-	if ok := caCertPool.AppendCertsFromPEM([]byte(service.CABundle)); !ok {
-		return nil, fmt.Errorf("failed to parse PEM CA bundle for APICall %s", a.name)
-	}
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
+
+	// Shared, so connections are pooled across calls. Never http.DefaultTransport itself:
+	// installing a DialContext on the global would affect every other HTTP user in the
+	// process, including the CEL http library's client.
+	transport := serviceCallTransport()
+
+	if service != nil && service.CABundle != "" {
+		caCertPool := x509.NewCertPool()
+		if ok := caCertPool.AppendCertsFromPEM([]byte(service.CABundle)); !ok {
+			return nil, fmt.Errorf("failed to parse PEM CA bundle for APICall %s", a.name)
+		}
+		// A per-bundle TLS config cannot use the shared transport. This path already built
+		// its own transport per call before the guard existed, so pooling is unchanged.
+		// Cloning DefaultTransport rather than building a bare one gives installGuard the
+		// non-nil Proxy and DialContext it wraps.
+		bundled := http.DefaultTransport.(*http.Transport).Clone()
+		bundled.TLSClientConfig = &tls.Config{
 			RootCAs:    caCertPool,
 			MinVersion: tls.VersionTLS12,
-		},
+		}
+		// The CA-bundle branch would otherwise skip the guard entirely.
+		installGuard(bundled)
+		transport = bundled
 	}
-	return &http.Client{
+
+	client := &http.Client{
 		Transport: tracing.Transport(transport, otelhttp.WithFilter(tracing.RequestFilterIsInSpan)),
-		Timeout:   timeout,
-	}, nil
+		Timeout:   a.config.GetTimeout(),
+	}
+	if filter.enabled() {
+		// Redirects are still followed; each hop is re-validated. See checkRedirect.
+		client.CheckRedirect = filter.checkRedirect
+	}
+	return client, nil
 }
 
 func (a *executor) buildRequestData(data []kyvernov1.RequestData) (io.Reader, error) {
