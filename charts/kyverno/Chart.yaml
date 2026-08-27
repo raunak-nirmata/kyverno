@@ -1,8 +1,8 @@
 apiVersion: v2
 type: application
 name: kyverno
-version: v0.0.0  # VERSION
-appVersion: latest
+version: 3.9.0-rc.1
+appVersion: v1.19.0-n4k.nirmata.1
 icon: https://github.com/kyverno/kyverno/raw/main/img/logo.png
 description: Kubernetes Native Policy Management
 keywords:
@@ -45,17 +45,17 @@ annotations:
       description: Add support for configuring container lifecycle hooks (e.g. a preStop sleep) on the admission, background, cleanup and reports controllers.
 dependencies:
   - name: grafana
-    version: v0.0.0  # VERSION
+    version: 3.9.0
     condition: grafana.enabled
   - name: crds
-    version: v0.0.0  # VERSION
+    version: 3.9.0
     condition: crds.install
   - name: kyverno-api
     version: 0.0.1-alpha.2
     repository: "https://kyverno.github.io/api"
     condition: crds.install
   - name: reports-server
-    version: "0.2.13"
+    version: 0.2.35
     repository: "https://nirmata.github.io/kyverno-charts"
     condition: reports-server.install
   - name: openreports

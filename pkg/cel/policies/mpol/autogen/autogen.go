@@ -31,7 +31,7 @@ func Autogen(policy policiesv1beta1.MutatingPolicyLike) (map[string]policiesv1be
 	actualControllers := autogen.AllConfigs
 	if policy.GetSpec().AutogenConfiguration != nil &&
 		policy.GetSpec().AutogenConfiguration.PodControllers != nil &&
-		policy.GetSpec().AutogenConfiguration.PodControllers.Controllers != nil {
+		len(policy.GetSpec().AutogenConfiguration.PodControllers.Controllers) != 0 {
 		actualControllers = sets.New(policy.GetSpec().AutogenConfiguration.PodControllers.Controllers...)
 	}
 	return generateRuleForControllers(policy.GetSpec(), actualControllers)
@@ -51,7 +51,7 @@ func generateRuleForControllers(spec *policiesv1beta1.MutatingPolicySpec, config
 		targets := mapping[config]
 		spec := spec.DeepCopy()
 		operations := spec.MatchConstraints.ResourceRules[0].Operations
-		match := autogen.CreateMatchConstraints(targets, operations, spec.MatchConstraints.NamespaceSelector)
+		match := autogen.CreateMatchConstraints(spec.MatchConstraints, targets, operations)
 		spec.SetMatchConstraints(*match)
 
 		for i := range spec.MatchConditions {

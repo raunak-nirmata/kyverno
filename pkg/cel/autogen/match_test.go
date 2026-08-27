@@ -15,6 +15,7 @@ func TestCreateMatchConstraints(t *testing.T) {
 		targets           []policiesv1beta1.Target
 		operations        []admissionregistrationv1.OperationType
 		namespaceSelector *metav1.LabelSelector
+		objectSelector    *metav1.LabelSelector
 		want              *admissionregistrationv1.MatchResources
 	}{{
 		name:       "nil targets",
@@ -146,11 +147,48 @@ func TestCreateMatchConstraints(t *testing.T) {
 				},
 			}},
 		},
+	}, {
+		name: "with object selector",
+		targets: []policiesv1beta1.Target{{
+			Group:    "foo",
+			Version:  "v1",
+			Resource: "bars",
+			Kind:     "Bar",
+		}},
+		operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+		namespaceSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{"kubernetes.io/namespace-type": "product"},
+		},
+		objectSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{"app": "critical"},
+		},
+		want: &admissionregistrationv1.MatchResources{
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"kubernetes.io/namespace-type": "product"},
+			},
+			ObjectSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "critical"},
+			},
+			ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
+				RuleWithOperations: admissionregistrationv1.RuleWithOperations{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+					Rule: admissionregistrationv1.Rule{
+						APIGroups:   []string{"foo"},
+						APIVersions: []string{"v1"},
+						Resources:   []string{"bars"},
+					},
+				},
+			}},
+		},
 	}}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := CreateMatchConstraints(tt.targets, tt.operations, tt.namespaceSelector)
+			source := &admissionregistrationv1.MatchResources{
+				NamespaceSelector: tt.namespaceSelector,
+				ObjectSelector:    tt.objectSelector,
+			}
+			got := CreateMatchConstraints(source, tt.targets, tt.operations)
 			assert.Equal(t, tt.want, got)
 		})
 	}

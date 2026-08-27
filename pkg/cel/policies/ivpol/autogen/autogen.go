@@ -22,7 +22,7 @@ func Autogen(policy policiesv1beta1.ImageValidatingPolicyLike) (map[string]polic
 	actualControllers := autogen.AllConfigs
 	if spec.AutogenConfiguration != nil &&
 		spec.AutogenConfiguration.PodControllers != nil &&
-		spec.AutogenConfiguration.PodControllers.Controllers != nil {
+		len(spec.AutogenConfiguration.PodControllers.Controllers) != 0 {
 		actualControllers = sets.New(spec.AutogenConfiguration.PodControllers.Controllers...)
 	}
 	return autogenIvPols(*spec, actualControllers)
@@ -42,7 +42,7 @@ func autogenIvPols(spec policiesv1beta1.ImageValidatingPolicySpec, configs sets.
 		targets := mapping[config]
 		spec := spec.DeepCopy()
 		operations := spec.MatchConstraints.ResourceRules[0].Operations
-		spec.MatchConstraints = autogen.CreateMatchConstraints(targets, operations, spec.MatchConstraints.NamespaceSelector)
+		spec.MatchConstraints = autogen.CreateMatchConstraints(spec.MatchConstraints, targets, operations)
 		bytes, err := json.Marshal(spec)
 		if err != nil {
 			return nil, err

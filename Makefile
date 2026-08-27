@@ -272,31 +272,31 @@ unused-package-check:
 
 $(BACKGROUND_BIN): fmt
 	@echo Build background controller binary... >&2
-	@CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) go build -o ./$(BACKGROUND_BIN) -ldflags=$(LD_FLAGS) ./$(BACKGROUND_DIR)
+	@CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) go build -buildvcs=false -o ./$(BACKGROUND_BIN) -ldflags=$(LD_FLAGS) ./$(BACKGROUND_DIR)
 
 $(CLEANUP_BIN): fmt
 	@echo Build cleanup controller binary... >&2
-	@CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) go build -o ./$(CLEANUP_BIN) -ldflags=$(LD_FLAGS) ./$(CLEANUP_DIR)
+	@CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) go build -buildvcs=false -o ./$(CLEANUP_BIN) -ldflags=$(LD_FLAGS) ./$(CLEANUP_DIR)
 
 $(CLI_BIN): fmt
 	@echo Build cli binary... >&2
-	@CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) go build -o ./$(CLI_BIN) -ldflags=$(LD_FLAGS) ./$(CLI_DIR)
+	@CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) go build -buildvcs=false -o ./$(CLI_BIN) -ldflags=$(LD_FLAGS) ./$(CLI_DIR)
 
 $(KYVERNO_BIN): fmt
 	@echo Build kyverno binary... >&2
-	@CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) go build -o ./$(KYVERNO_BIN) -ldflags=$(LD_FLAGS) ./$(KYVERNO_DIR)
+	@CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) go build -buildvcs=false -o ./$(KYVERNO_BIN) -ldflags=$(LD_FLAGS) ./$(KYVERNO_DIR)
 
 $(KYVERNOPRE_BIN): fmt
 	@echo Build kyvernopre binary... >&2
-	@CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) go build -o ./$(KYVERNOPRE_BIN) -ldflags=$(LD_FLAGS) ./$(KYVERNOPRE_DIR)
+	@CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) go build -buildvcs=false -o ./$(KYVERNOPRE_BIN) -ldflags=$(LD_FLAGS) ./$(KYVERNOPRE_DIR)
 
 $(REPORTS_BIN): fmt
 	@echo Build reports controller binary... >&2
-	@CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) go build -o ./$(REPORTS_BIN) -ldflags=$(LD_FLAGS) ./$(REPORTS_DIR)
+	@CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) go build -buildvcs=false -o ./$(REPORTS_BIN) -ldflags=$(LD_FLAGS) ./$(REPORTS_DIR)
 
 $(READINESS_BIN): fmt vet
 	@echo Build readiness-checker binary... >&2
-	@CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) go build -o ./$(READINESS_BIN) -ldflags=$(LD_FLAGS) ./$(READINESS_DIR)
+	@CGO_ENABLED=$(CGO_ENABLED) GOOS=$(GOOS) go build -buildvcs=false -o ./$(READINESS_BIN) -ldflags=$(LD_FLAGS) ./$(READINESS_DIR)
 
 .PHONY: build-background-controller
 build-background-controller: ## Build background controller binary
@@ -349,7 +349,7 @@ docker-buildx-builder:
 	fi
 
 kyverno-fips: fmt vet
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=$(CGO_ENABLED) go build ./$(KYVERNO_DIR) -o $(PWD)/$(KYVERNO_DIR)/$(KYVERNO_IMAGE_FIPS) -tags "$(BUILD_TAGS)" -ldflags="$(LD_FLAGS)" $(PWD)/$(KYVERNO_PATH)
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=$(CGO_ENABLED) go build -buildvcs=false ./$(KYVERNO_DIR) -o $(PWD)/$(KYVERNO_DIR)/$(KYVERNO_IMAGE_FIPS) -tags "$(BUILD_TAGS)" -ldflags="$(LD_FLAGS)" $(PWD)/$(KYVERNO_PATH)
 
 docker-publish-kyverno-fips: docker-buildx-builder docker-build-and-push-kyverno-fips
 
@@ -374,7 +374,7 @@ docker-get-kyverno-digest:
 # KYVERNOPRE/INIT CONTAINER
 ##################################
 initContainer: fmt vet
-	GOOS=$(GOOS) go build -o $(PWD)/$(KYVERNOPRE_DIR)/kyvernopre -ldflags=$(LD_FLAGS) $(PWD)/$(KYVERNOPRE_DIR)
+	GOOS=$(GOOS) go build -buildvcs=false -o $(PWD)/$(KYVERNOPRE_DIR)/kyvernopre -ldflags=$(LD_FLAGS) $(PWD)/$(KYVERNOPRE_DIR)
 
 .PHONY: docker-build-and-push-initContainer-fips 
 docker-publish-initContainer-fips: docker-buildx-builder docker-build-and-push-initContainer-fips 
@@ -400,7 +400,7 @@ docker-get-initContainer-digest:
 # KYVERNO-CLI FIPS CONTAINER
 ##################################
 cli:
-	GOOS=$(GOOS) go build -o $(PWD)/$(CLI_DIR)/kubectl-kyverno -ldflags=$(LD_FLAGS) $(PWD)/$(CLI_DIR)
+	GOOS=$(GOOS) go build -buildvcs=false -o $(PWD)/$(CLI_DIR)/kubectl-kyverno -ldflags=$(LD_FLAGS) $(PWD)/$(CLI_DIR)
 
 .PHONY: docker-build-and-push-cli-fips
 docker-publish-cli-fips: docker-buildx-builder docker-build-and-push-cli-fips
@@ -427,7 +427,7 @@ docker-get-cli-digest:
 ##################################
 
 cleanup:
-	GOOS=$(GOOS) go build -o $(PWD)/$(CLEANUP_DIR)/cleanup-controller -ldflags=$(LD_FLAGS) $(PWD)/$(CLEANUP_DIR)
+	GOOS=$(GOOS) go build -buildvcs=false -o $(PWD)/$(CLEANUP_DIR)/cleanup-controller -ldflags=$(LD_FLAGS) $(PWD)/$(CLEANUP_DIR)
 
 .PHONY: docker-build-and-push-cleanup-fips
 docker-publish-cleanup-fips: docker-buildx-builder docker-build-and-push-cleanup-fips
@@ -454,7 +454,7 @@ docker-get-cleanup-digest:
 ##################################
 
 background:
-	GOOS=$(GOOS) go build -o $(PWD)/$(BACKGROUND_DIR)/background-controller -ldflags=$(LD_FLAGS) $(PWD)/$(BACKGROUND_DIR)
+	GOOS=$(GOOS) go build -buildvcs=false -o $(PWD)/$(BACKGROUND_DIR)/background-controller -ldflags=$(LD_FLAGS) $(PWD)/$(BACKGROUND_DIR)
 
 .PHONY: docker-build-and-push-background-fips
 docker-publish-background-fips: docker-buildx-builder docker-build-and-push-background-fips
@@ -482,7 +482,7 @@ docker-get-background-digest:
 OUTPUT    := kyvernopre
 
 reports:
-	GOOS=$(GOOS) go build -o $(PWD)/$(REPORTS_DIR)/kyverno -ldflags=$(LD_FLAGS) $(PWD)/$(REPORTS_DIR)
+	GOOS=$(GOOS) go build -buildvcs=false -o $(PWD)/$(REPORTS_DIR)/kyverno -ldflags=$(LD_FLAGS) $(PWD)/$(REPORTS_DIR)
 
 .PHONY: docker-build-and-push-reports-fips
 docker-publish-reports-fips: docker-buildx-builder docker-build-and-push-reports-fips
@@ -935,6 +935,7 @@ endef
 helm-setup-dependency-charts: $(HELM) ## Add dependency helm repos and build dependencies
 	@echo Setting up helm dependencies... >&2
 	@$(HELM) repo add openreports https://openreports.github.io/reports-api
+	@$(HELM) repo add nirmata-kyverno-charts https://nirmata.github.io/kyverno-charts
 	@$(HELM) repo add reports-server https://kyverno.github.io/reports-server
 	@$(HELM) repo add kyverno-api https://kyverno.github.io/api
 	@$(HELM) dependency update ./charts/kyverno

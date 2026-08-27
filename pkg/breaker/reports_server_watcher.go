@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8swatch "k8s.io/apimachinery/pkg/watch"
 	apiregv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
@@ -80,7 +81,16 @@ func watchAPIService(
 ) error {
 	svc, err := client.ApiregistrationV1().APIServices().Get(ctx, reportsAPIServiceName, metav1.GetOptions{})
 	if err != nil {
-		logger.Info("reports-server not reachable yet, reports will be dropped until it is available", "apiservice", reportsAPIServiceName)
+		if apierrors.IsNotFound(err) {
+			// APIService does not exist: reports-server is not deployed.
+			// Leave the breaker in its current pass-through state so reports are
+			// written directly to Kubernetes (etcd-backed CRDs) as in vanilla Kyverno.
+			logger.V(3).Info("reports-server APIService not found; report writes will pass through to Kubernetes", "apiservice", reportsAPIServiceName)
+			return err
+		}
+		// Transient error reaching the aggregation layer (network, 503, etc.).
+		// Drop writes until we can confirm the server is healthy.
+		logger.Info("reports-server not reachable, reports will be dropped until it is available", "apiservice", reportsAPIServiceName)
 		notify(false)
 		return err
 	}
