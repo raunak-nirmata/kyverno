@@ -180,10 +180,10 @@ func (a *executor) addHTTPHeaders(req *http.Request, headers []kyvernov1.HTTPHea
 func (a *executor) buildHTTPClient(policy *egressPolicy, base http.RoundTripper, service *kyvernov1.ServiceCall) (*http.Client, error) {
 	timeout := a.config.GetTimeout()
 	if service == nil || service.CABundle == "" {
-		// base is the SSRF-guarded transport from getServiceHTTP(); keep the
-		// tracing wrapper 1.19 added in #17116 rather than dropping either.
+		// base comes from getServiceHTTP(), which already wraps the SSRF-guarded
+		// transport in tracing.Transport (#17116) - do not wrap it again here.
 		return &http.Client{
-			Transport:     tracing.Transport(base, otelhttp.WithFilter(tracing.RequestFilterIsInSpan)),
+			Transport:     base,
 			Timeout:       timeout,
 			CheckRedirect: checkServiceRedirect(policy),
 		}, nil
