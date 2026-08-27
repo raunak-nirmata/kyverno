@@ -5,6 +5,13 @@ permissions: {}
 on:
   workflow_call: {}
 
+env:
+  # Credentials for the private Nirmata Go modules (license-guardian). Consumed by
+  # .github/actions/go/install. DEPLOYMENT_* are organisation secrets.
+  GOPRIVATE: github.com/nirmata
+  GH_DEP_USERNAME: ${{ secrets.DEPLOYMENT_USERNAME }}
+  GH_DEP_PAT: ${{ secrets.DEPLOYMENT_PAT }}
+
 jobs:
   k6:
     runs-on: ubuntu-latest

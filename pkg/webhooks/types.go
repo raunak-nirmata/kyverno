@@ -47,6 +47,11 @@ type PolicyHandlers struct {
 	Validation Handler
 }
 
+type LicenseHandlers struct {
+	// Validation enforces the Nirmata licensed policy cap on policy creates
+	Validation Handler
+}
+
 type ResourceHandlers struct {
 	// Mutation performs the mutation of kube resources
 	Mutation Handler

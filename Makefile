@@ -112,6 +112,12 @@ COMMA                              := ,
 ##################################
 FIPS_ENABLED := 0 # Default to FIPS disabled
 
+# Forwards a credential for the private Nirmata Go modules to the FIPS image builds
+# as a BuildKit secret. Expands to nothing when NIRMATA_MODULE_TOKEN is unset.
+ifdef NIRMATA_MODULE_TOKEN
+NIRMATA_MODULE_SECRET := --secret id=nirmata_module_token,env=NIRMATA_MODULE_TOKEN
+endif
+
 ifeq ($(FIPS_ENABLED), 1)
 IMAGE_TAG    := $(shell git describe --tags --abbrev=0)
 BUILD_TAGS   :="fips" 
@@ -349,6 +355,7 @@ docker-publish-kyverno-fips: docker-buildx-builder docker-build-and-push-kyverno
 
 docker-build-and-push-kyverno-fips: docker-buildx-builder
 	@docker buildx build --file $(PWD)/$(KYVERNO_DIR)/Dockerfile.fips \
+		$(NIRMATA_MODULE_SECRET) \
 		--progress plain \
 		--platform linux/amd64,linux/arm64 \
 		--tag $(REPO_KYVERNO_FIPS):$(IMAGE_TAG) \
@@ -374,6 +381,7 @@ docker-publish-initContainer-fips: docker-buildx-builder docker-build-and-push-i
 
 docker-build-and-push-initContainer-fips: docker-buildx-builder
 	@docker buildx build --file $(PWD)/$(KYVERNOPRE_DIR)/Dockerfile.fips \
+		$(NIRMATA_MODULE_SECRET) \
 		--progress plain \
 		--platform linux/amd64,linux/arm64 \
 		--tag $(REPO_KYVERNOPRE_FIPS):$(IMAGE_TAG) \
@@ -399,6 +407,7 @@ docker-publish-cli-fips: docker-buildx-builder docker-build-and-push-cli-fips
 
 docker-build-and-push-cli-fips: docker-buildx-builder
 	@docker buildx build --file $(PWD)/$(CLI_DIR)/Dockerfile.fips \
+		$(NIRMATA_MODULE_SECRET) \
 		--progress plain \
 		--platform linux/amd64,linux/arm64 \
 		--tag $(REPO_CLI_FIPS):$(IMAGE_TAG) \
@@ -425,6 +434,7 @@ docker-publish-cleanup-fips: docker-buildx-builder docker-build-and-push-cleanup
 
 docker-build-and-push-cleanup-fips: docker-buildx-builder
 	@docker buildx build --file $(PWD)/$(CLEANUP_DIR)/Dockerfile.fips \
+		$(NIRMATA_MODULE_SECRET) \
 		--progress plain \
 		--platform linux/amd64,linux/arm64 \
 		--tag $(REPO_CLEANUP_FIPS):$(IMAGE_TAG) \
@@ -451,6 +461,7 @@ docker-publish-background-fips: docker-buildx-builder docker-build-and-push-back
 
 docker-build-and-push-background-fips: docker-buildx-builder
 	@docker buildx build --file $(PWD)/$(BACKGROUND_DIR)/Dockerfile.fips \
+		$(NIRMATA_MODULE_SECRET) \
 		--progress plain \
 		--platform linux/amd64,linux/arm64 \
 		--tag $(REPO_BACKGROUND_FIPS):$(IMAGE_TAG) \
@@ -478,6 +489,7 @@ docker-publish-reports-fips: docker-buildx-builder docker-build-and-push-reports
 
 docker-build-and-push-reports-fips: docker-buildx-builder
 	@docker buildx build --file $(PWD)/$(REPORTS_DIR)/Dockerfile.fips \
+		$(NIRMATA_MODULE_SECRET) \
 		--progress plain \
 		--platform linux/amd64,linux/arm64 \
 		--tag $(REPO_REPORTS_FIPS):$(IMAGE_TAG) \

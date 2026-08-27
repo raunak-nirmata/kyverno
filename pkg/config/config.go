@@ -41,10 +41,16 @@ const (
 	VerifyMutatingWebhookConfigurationName = "kyverno-verify-mutating-webhook-cfg"
 	// TtlValidatingWebhookConfigurationName ttl label validating webhook configuration name
 	TtlValidatingWebhookConfigurationName = "kyverno-ttl-validating-webhook-cfg"
+	// LicenseValidatingWebhookConfigurationName is the Nirmata licensing capacity
+	// gate. Separate from the policy webhook so it can cover every policy kind
+	// that counts toward the cap without changing policy content validation.
+	LicenseValidatingWebhookConfigurationName = "kyverno-license-validating-webhook-cfg"
 )
 
 // webhook names
 const (
+	// LicenseValidatingWebhookName is the Nirmata licensing capacity gate webhook
+	LicenseValidatingWebhookName = "validate-license.kyverno.svc"
 	// PolicyValidatingWebhookName default policy validating webhook name
 	PolicyValidatingWebhookName = "validate-policy.kyverno.svc"
 	// ValidatingWebhookName ...
@@ -75,6 +81,8 @@ const (
 
 // paths
 const (
+	// LicenseValidatingWebhookServicePath is the path for the Nirmata licensing capacity gate
+	LicenseValidatingWebhookServicePath = "/licensevalidate"
 	// PolicyValidatingWebhookServicePath is the path for policy validation webhook(used to validate policy resource)
 	PolicyValidatingWebhookServicePath = "/policyvalidate"
 	// ValidatingWebhookServicePath is the path for validation webhook
@@ -152,6 +160,8 @@ var (
 	kyvernoMetricsConfigMapName = osutils.GetEnvWithFallback("METRICS_CONFIG", "kyverno-metrics")
 	// kyvernoDryRunNamespace is the namespace for DryRun option of YAML verification
 	kyvernoDryrunNamespace = osutils.GetEnvWithFallback("KYVERNO_DRYRUN_NAMESPACE", "kyverno-dryrun")
+	// kyvernoLicenseStateConfigMapName is the Nirmata license state configmap name
+	kyvernoLicenseStateConfigMapName = osutils.GetEnvWithFallback("LICENSE_STATE_CONFIG", "kyverno-license-state")
 )
 
 func KyvernoDisableWebhookConfigMapName() string {
@@ -192,6 +202,13 @@ func KyvernoConfigMapName() string {
 
 func KyvernoMetricsConfigMapName() string {
 	return kyvernoMetricsConfigMapName
+}
+
+// KyvernoLicenseStateConfigMapName is the ConfigMap holding Nirmata license
+// trial and grace bookkeeping. It is provisioned by the Helm chart and written
+// by the leader-elected admission controller.
+func KyvernoLicenseStateConfigMapName() string {
+	return kyvernoLicenseStateConfigMapName
 }
 
 func KyvernoDisableWebhookConfigMapKey() string {

@@ -89,6 +89,19 @@ false
   {{- $flags = append $flags (print "--apiCallTimeout=" .apiCallTimeout) -}}
   {{- $flags = append $flags (print "--maxGlobalContextEntries=" (int .maxGlobalContextEntries)) -}}
 {{- end -}}
+{{- with .licensing -}}
+  {{/* Licensing itself is always on and has no enable flag; only the cadence and
+       optional commercial license path are adjustable. */}}
+  {{- with .evaluationInterval -}}
+    {{- $flags = append $flags (print "--licenseEvaluationInterval=" .) -}}
+  {{- end -}}
+  {{- with .licensePath -}}
+    {{- $flags = append $flags (print "--licensePath=" .) -}}
+  {{- end -}}
+  {{- with .warnRatio -}}
+    {{- $flags = append $flags (print "--licenseWarnRatio=" .) -}}
+  {{- end -}}
+{{- end -}}
 {{- with .logging -}}
   {{- $flags = append $flags (print "--loggingFormat=" .format) -}}
   {{- $flags = append $flags (print "--v=" .verbosity) -}}

@@ -5,10 +5,10 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	apiregv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
-	aggregator "k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8swatch "k8s.io/apimachinery/pkg/watch"
+	apiregv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
+	aggregator "k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset"
 )
 
 const reportsAPIServiceName = "v1.reports.kyverno.io"

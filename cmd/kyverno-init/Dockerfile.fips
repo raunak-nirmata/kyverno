@@ -9,6 +9,7 @@ RUN mkdir -p /go && \
     tdnf install -y \
         ca-certificates \
         gcc \
+        git \
         make \
         shadow-utils && \
     tdnf clean all
@@ -23,7 +24,23 @@ ARG MAIN_FILE
 ARG OUTPUT=kyvernopre
 
 ARG TARGETARCH
-RUN GOOS=linux GOARCH=$TARGETARCH \
+
+# Private Nirmata modules need a git credential. Passed as a BuildKit secret, not a
+# build arg, so it never lands in an image layer:
+#
+#   docker buildx build --secret id=nirmata_module_token,env=NIRMATA_MODULE_TOKEN ...
+#
+# The mount is optional. No git-config cleanup needed: this is a builder stage and
+# only the compiled binary is copied into the final image.
+RUN --mount=type=secret,id=nirmata_module_token,required=false \
+    set -e; \
+    export GOPRIVATE='github.com/nirmata/*'; \
+    if [ -f /run/secrets/nirmata_module_token ]; then \
+        git config --global \
+            url."https://x-access-token:$(cat /run/secrets/nirmata_module_token)@github.com/nirmata/".insteadOf \
+            "https://github.com/nirmata/"; \
+    fi; \
+    GOOS=linux GOARCH=$TARGETARCH \
     BUILD_TAGS=${BUILD_TAGS} GOEXPERIMENT=${GOEXPERIMENT} \
     CGO_ENABLED=1 FIPS_ENABLED=1 \
     go build -ldflags="${LD_FLAGS}" -o /app/${OUTPUT} ${MAIN_FILE}

@@ -25,6 +25,10 @@ on:
         required: true
       registry_password:
         required: true
+      # Credential for the private Nirmata Go modules, which the FIPS images compile
+      # inside the Docker build. Optional.
+      deployment_pat:
+        required: false
 
 jobs:
   build:
@@ -33,6 +37,10 @@ jobs:
       contents: read
       packages: write
       id-token: write
+    env:
+      # The Makefile forwards this to BuildKit as a build secret, never a build arg,
+      # so it is not recoverable from the published layers. Empty disables the flag.
+      NIRMATA_MODULE_TOKEN: ${{ secrets.deployment_pat }}
     steps:
     - name: Checkout release
       if: ${{ inputs.tag == 'release'}}
