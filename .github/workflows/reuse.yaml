@@ -29,6 +29,10 @@ on:
       # inside the Docker build. Optional.
       deployment_pat:
         required: false
+      # Username paired with deployment_pat for the git credential used by
+      # .github/actions/go/install to fetch private github.com/nirmata modules.
+      deployment_username:
+        required: false
 
 jobs:
   build:
@@ -41,6 +45,14 @@ jobs:
       # The Makefile forwards this to BuildKit as a build secret, never a build arg,
       # so it is not recoverable from the published layers. Empty disables the flag.
       NIRMATA_MODULE_TOKEN: ${{ secrets.deployment_pat }}
+      # Credentials for the private Nirmata Go modules (license-guardian), consumed
+      # by .github/actions/go/install. These are declared here rather than inherited
+      # from the caller: a reusable workflow does not receive the calling workflow's
+      # `env`, only its `with` and `secrets`. Without them, host-side Go commands
+      # (the SBOM step's `go list`) cannot resolve github.com/nirmata/* modules.
+      GOPRIVATE: github.com/nirmata
+      GH_DEP_USERNAME: ${{ secrets.deployment_username }}
+      GH_DEP_PAT: ${{ secrets.deployment_pat }}
     steps:
     - name: Checkout release
       if: ${{ inputs.tag == 'release'}}
@@ -60,9 +72,7 @@ jobs:
       run: git fetch --prune --unshallow --tags
 
     - name: Set up Go
-      uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
-      with:
-        go-version: ~1.25.8
+      uses: ./.github/actions/go/install
 
     - name: Install Cosign
       uses: sigstore/cosign-installer@4959ce089c160fddf62f7b42464195ba1a56d382 # v3.6.0
