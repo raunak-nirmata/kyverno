@@ -20,6 +20,7 @@ type retryWatcher interface {
 	ResultChan() <-chan k8swatch.Event
 	IsRunning() bool
 	Stop()
+	Done() <-chan struct{}
 }
 
 type resourceUIDGetter interface {
@@ -34,6 +35,11 @@ type counter struct {
 	lock         sync.RWMutex
 	entries      sets.Set[types.UID]
 	retryWatcher retryWatcher
+}
+
+// Stop stops the underlying RetryWatcher. Safe to call multiple times.
+func (c *counter) Stop() {
+	c.retryWatcher.Stop()
 }
 
 func (c *counter) Record(uid types.UID) {
@@ -79,6 +85,16 @@ func StartResourceCounter(ctx context.Context, client metadataclient.Interface, 
 		entries:      entries,
 		retryWatcher: watchInterface,
 	}
+	// Tie the RetryWatcher's lifetime to ctx so callers don't have to remember
+	// to call Stop() explicitly; cancelling ctx (e.g. on a reports-server
+	// availability transition) stops the watcher and frees its goroutines.
+	go func() {
+		select {
+		case <-ctx.Done():
+			watchInterface.Stop()
+		case <-watchInterface.Done():
+		}
+	}()
 	go func() {
 		for event := range watchInterface.ResultChan() {
 			getter, ok := event.Object.(resourceUIDGetter)
@@ -107,6 +123,10 @@ func StartAdmissionReportsCounter(ctx context.Context, client metadataclient.Int
 	}
 	cephrs, err := StartResourceCounter(ctx, client, reportsv1.SchemeGroupVersion.WithResource("clusterephemeralreports"), tweakListOptions)
 	if err != nil {
+		// ephrs already started its RetryWatcher; without this it would be
+		// orphaned (no reference retained anywhere) since we're returning an
+		// error instead of a Counter.
+		ephrs.Stop()
 		return nil, err
 	}
 	return composite{
@@ -124,6 +144,8 @@ func StartBackgroundReportsCounter(ctx context.Context, client metadataclient.In
 	}
 	cephrs, err := StartResourceCounter(ctx, client, reportsv1.SchemeGroupVersion.WithResource("clusterephemeralreports"), tweakListOptions)
 	if err != nil {
+		// See StartAdmissionReportsCounter: avoid orphaning the first counter.
+		ephrs.Stop()
 		return nil, err
 	}
 	return composite{
@@ -145,4 +167,21 @@ func (c composite) Count() (int, bool) {
 		sum += count
 	}
 	return sum, true
+}
+
+// stopper is implemented by *counter; kept unexported so the exported Counter
+// interface (implemented by other fakes) doesn't need a Stop() method.
+type stopper interface {
+	Stop()
+}
+
+// Stop stops every underlying counter that supports it. Production callers
+// tie counter lifetimes to ctx cancellation (see StartResourceCounter), so
+// this is primarily for callers/tests holding a concrete composite value.
+func (c composite) Stop() {
+	for _, inner := range c.inner {
+		if s, ok := inner.(stopper); ok {
+			s.Stop()
+		}
+	}
 }

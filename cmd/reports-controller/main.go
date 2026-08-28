@@ -458,20 +458,52 @@ func main() {
 		}
 		// Start with the breaker closed (dropping) until reports-server signals it is ready.
 		dropBreaker()
+		// sessionCancel is only ever read/written from the reports-server-watcher
+		// goroutine (WatchReportsServerReady invokes onReady/onNotReady serially,
+		// never concurrently), so it needs no locking of its own.
+		var sessionCancel context.CancelFunc
+		onReady := func(rctx context.Context) {
+			if sessionCancel != nil {
+				sessionCancel()
+			}
+			sctx, cancel := context.WithCancel(rctx)
+			sessionCancel = cancel
+			// Transition-only notifications mean onReady fires once per
+			// availability transition, not on every reconnect, so retry
+			// counter setup explicitly instead of relying on the next
+			// reconnect to paper over a failed StartBackgroundReportsCounter.
+			go func() {
+				for {
+					ephrs, err := breaker.StartBackgroundReportsCounter(sctx, setup.MetadataClient)
+					if err == nil {
+						breaker.SetReportsBreaker(breaker.NewBreaker("background scan reports", ephrCounterFunc(ephrs)))
+						return
+					}
+					setup.Logger.Error(err, "failed to start background scan reports counter; allowing writes without threshold, retrying in 5s")
+					breaker.SetReportsBreaker(breaker.NewBreaker("background scan reports (pass-through)", func(context.Context) bool {
+						return false
+					}))
+					select {
+					case <-sctx.Done():
+						return
+					case <-time.After(5 * time.Second):
+					}
+				}
+			}()
+		}
+		onNotReady := func() {
+			if sessionCancel != nil {
+				sessionCancel()
+				sessionCancel = nil
+			}
+			dropBreaker()
+		}
 		breaker.WatchReportsServerReady(
 			ctx,
 			setup.Logger.WithName("reports-server-watcher"),
 			setup.AggregatorClient,
-			func(rctx context.Context) {
-				ephrs, err := breaker.StartBackgroundReportsCounter(rctx, setup.MetadataClient)
-				if err != nil {
-					setup.Logger.Error(err, "failed to start background scan reports counter after reports-server became ready")
-					dropBreaker()
-					return
-				}
-				breaker.SetReportsBreaker(breaker.NewBreaker("background scan reports", ephrCounterFunc(ephrs)))
-			},
-			dropBreaker,
+			onReady,
+			onNotReady,
 		)
 
 		typeConverter := patch.NewTypeConverterManager(nil, setup.KubeClient.Discovery().OpenAPIV3())

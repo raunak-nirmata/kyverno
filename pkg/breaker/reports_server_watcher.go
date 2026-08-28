@@ -24,9 +24,22 @@ func WatchReportsServerReady(
 	onReady func(context.Context),
 	onNotReady func(),
 ) {
+	// Wrap the callbacks so the state-transition log lines only fire together
+	// with the callback that actually leaks/allocates resources (onReady),
+	// preserving the log<->leak diagnostic correlation used to root-cause
+	// CS-3797.
+	loggedOnReady := func(c context.Context) {
+		logger.Info("reports-server is now available, resuming report writes")
+		onReady(c)
+	}
+	loggedOnNotReady := func() {
+		logger.Info("reports-server is not available, reports will be dropped until it recovers")
+		onNotReady()
+	}
+	notify := newTransitionNotifier(ctx, loggedOnReady, loggedOnNotReady)
 	go func() {
 		for {
-			if err := watchAPIService(ctx, logger, client, onReady, onNotReady); err != nil {
+			if err := watchAPIService(ctx, logger, client, notify); err != nil {
 				if ctx.Err() != nil {
 					return
 				}
@@ -41,27 +54,38 @@ func WatchReportsServerReady(
 	}()
 }
 
+// newTransitionNotifier returns a notify func that invokes onReady/onNotReady
+// only when availability changes (first observation always fires).
+// Not safe for concurrent use; called only from the watch goroutine.
+func newTransitionNotifier(ctx context.Context, onReady func(context.Context), onNotReady func()) func(bool) {
+	var last *bool
+	return func(available bool) {
+		if last != nil && *last == available {
+			return
+		}
+		last = &available
+		if available {
+			onReady(ctx)
+		} else {
+			onNotReady()
+		}
+	}
+}
+
 func watchAPIService(
 	ctx context.Context,
 	logger logr.Logger,
 	client aggregator.Interface,
-	onReady func(context.Context),
-	onNotReady func(),
+	notify func(bool),
 ) error {
 	svc, err := client.ApiregistrationV1().APIServices().Get(ctx, reportsAPIServiceName, metav1.GetOptions{})
 	if err != nil {
 		logger.Info("reports-server not reachable yet, reports will be dropped until it is available", "apiservice", reportsAPIServiceName)
-		onNotReady()
+		notify(false)
 		return err
 	}
 
-	if isAPIServiceAvailable(svc) {
-		logger.Info("reports-server is now available, resuming report writes")
-		onReady(ctx)
-	} else {
-		logger.Info("reports-server not yet available, reports will be dropped until it is ready", "apiservice", reportsAPIServiceName)
-		onNotReady()
-	}
+	notify(isAPIServiceAvailable(svc))
 
 	w, err := client.ApiregistrationV1().APIServices().Watch(ctx, metav1.ListOptions{
 		FieldSelector:   "metadata.name=" + reportsAPIServiceName,
@@ -86,16 +110,10 @@ func watchAPIService(
 			}
 			switch event.Type {
 			case k8swatch.Added, k8swatch.Modified:
-				if isAPIServiceAvailable(apiSvc) {
-					logger.Info("reports-server is now available, resuming report writes")
-					onReady(ctx)
-				} else {
-					logger.Info("reports-server is not available, reports will be dropped until it recovers")
-					onNotReady()
-				}
+				notify(isAPIServiceAvailable(apiSvc))
 			case k8swatch.Deleted:
 				logger.Info("reports-server APIService removed, reports will be dropped")
-				onNotReady()
+				notify(false)
 			}
 		}
 	}

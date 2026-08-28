@@ -26,6 +26,10 @@ func (f *fakeRetryWatcher) IsRunning() bool {
 
 func (f *fakeRetryWatcher) Stop() {}
 
+func (f *fakeRetryWatcher) Done() <-chan struct{} {
+	return nil
+}
+
 // counter tests
 
 func TestCounter_RecordAndForget(t *testing.T) {
