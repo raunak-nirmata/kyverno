@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -44,7 +44,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -59,7 +59,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -74,7 +74,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -166,7 +166,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -181,7 +181,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
         shard-index: [0, 1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -199,7 +199,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -214,7 +214,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
         shard-index: [0, 1, 2]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -232,7 +232,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -247,7 +247,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -262,7 +262,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
         shard-index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -315,7 +315,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -330,7 +330,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
         shard-index: [0, 1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -350,7 +350,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -365,7 +365,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
         shard-index: [0, 1, 2]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -383,7 +383,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -398,7 +398,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
         shard-index: [0, 1, 2]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -463,7 +463,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
         shard-index: [0, 1, 2]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -481,7 +481,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -496,7 +496,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
         shard-index: [0, 1, 2]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -515,7 +515,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -530,7 +530,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -545,7 +545,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
         shard-index: [0, 1, 2]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -563,7 +563,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -579,7 +579,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -594,7 +594,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -609,7 +609,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -625,7 +625,7 @@ jobs:
       fail-fast: false
       matrix:
         kyverno-configs: [standard, default, force-failure-policy-ignore]
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -640,7 +640,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
         shard-index: [0, 1, 2]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -658,7 +658,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -674,7 +674,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -689,7 +689,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
         shard-index: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -707,7 +707,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -722,7 +722,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
         shard-index: [0, 1, 2, 3, 4]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -743,7 +743,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
         shard-index: [0, 1]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -761,7 +761,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -776,7 +776,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -791,7 +791,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: ./.github/actions/tests/conformance/run
@@ -815,6 +815,9 @@ jobs:
       - name: Create kind cluster
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
+          # kind-action v1.14.0 bundles kind v0.31.0 (Kubernetes <= v1.35).
+          # Pin newer kind so v1.36/v1.37 node images boot.
+          version: v0.33.0
           node_image: kindest/node:${{ matrix.k8s-version }}
           cluster_name: kind
           config: ./scripts/config/kind/default.yaml
@@ -889,7 +892,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -898,6 +901,9 @@ jobs:
       - name: Create kind cluster
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
+          # kind-action v1.14.0 bundles kind v0.31.0 (Kubernetes <= v1.35).
+          # Pin newer kind so v1.36/v1.37 node images boot.
+          version: v0.33.0
           node_image: kindest/node:${{ matrix.k8s-version }}
           cluster_name: kind
           config: ./scripts/config/kind/default.yaml
@@ -934,7 +940,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
     steps:
       - name: Checkout kyverno/kyverno
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -943,6 +949,9 @@ jobs:
       - name: Create kind cluster
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
+          # kind-action v1.14.0 bundles kind v0.31.0 (Kubernetes <= v1.35).
+          # Pin newer kind so v1.36/v1.37 node images boot.
+          version: v0.33.0
           node_image: kindest/node:${{ matrix.k8s-version }}
           cluster_name: kind
           config: ./scripts/config/kind/default.yaml
@@ -977,7 +986,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        k8s-version: [v1.33.7, v1.34.3, v1.35.1]
+        k8s-version: [v1.33.7, v1.34.3, v1.35.1, v1.36.4, v1.37.0]
         kyverno-version: ["3.6"]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -987,6 +996,9 @@ jobs:
       - name: Create kind cluster
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
+          # kind-action v1.14.0 bundles kind v0.31.0 (Kubernetes <= v1.35).
+          # Pin newer kind so v1.36/v1.37 node images boot.
+          version: v0.33.0
           node_image: kindest/node:${{ matrix.k8s-version }}
           cluster_name: kind
           config: ./scripts/config/kind/default.yaml

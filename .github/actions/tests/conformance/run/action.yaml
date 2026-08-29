@@ -56,6 +56,9 @@ runs:
     - name: Create kind cluster
       uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
       with:
+        # kind-action v1.14.0 bundles kind v0.31.0, which supports Kubernetes up
+        # to v1.35. Pin a newer kind that supports v1.36 and v1.37 node images.
+        version: v0.33.0
         node_image: kindest/node:${{ inputs.k8s-version }}
         cluster_name: kind
         config: ${{ inputs.kind-config }}
