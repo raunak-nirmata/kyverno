@@ -331,6 +331,11 @@ config:
       - kyverno-policy-validating-webhook-cfg
       - kyverno-exception-validating-webhook-cfg
 
+  # -- Generate events on policy objects.
+  # When set to false, events (violations, errors, etc.) will only be created on resources, not on policy objects.
+  # This reduces event noise in multi-tenant environments where policy events may not be needed.
+  generatePolicyEvents: true
+
   # -- Enable registry mutation for container images. Enabled by default.
   enableDefaultRegistryMutation: true
 
