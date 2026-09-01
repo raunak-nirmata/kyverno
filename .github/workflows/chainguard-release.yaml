@@ -6,12 +6,20 @@ name: Chainguard Partner Release
 # the Chainguard Factory can build hardened images from them.
 #
 # Triggers:
-#   - Automatic: every GA release tag (v*-n4k.nirmata.*) pushed to enterprise-kyverno
-#   - Manual:    workflow_dispatch with an explicit tag — use a *-dirty tag for testing
-#                without triggering a real Chainguard Factory build.
+#   - Automatic: GA release tags only. A GA tag is exactly vX.Y.Z-n4k.nirmata.N with
+#                nothing appended, e.g. v1.19.0-n4k.nirmata.1. Anything carrying a
+#                further suffix (-rc.2, -rc1, -alpha, -beta-3, -dirty) is a
+#                pre-release and does not trigger a push build.
+#   - Manual:    workflow_dispatch with an explicit tag. Non-GA tags are allowed here
+#                and produce a DRAFT release only, so the pipeline can be exercised
+#                end to end without triggering a real Chainguard Factory build.
 #
-# Dirty tags (containing "-dirty") create a draft release only.
-# The Chainguard Factory ignores Draft releases, so they are safe for testing.
+# Only GA tags are published. Everything else stops at draft, and the Chainguard
+# Factory ignores Draft releases, so drafts are safe for testing.
+#
+# GA is matched by allowlist rather than by excluding known pre-release suffixes,
+# so a new suffix convention is treated as non-GA by default instead of leaking a
+# pre-release build to the Factory.
 #
 # Required secrets:
 #   CHAINGUARD_RELEASER_APP_ID      — GitHub App ID (created in nirmata org)
@@ -27,13 +35,21 @@ permissions:
 on:
   push:
     tags:
+      # GA tags only. The negative patterns drop anything with a suffix appended
+      # after nirmata.N, which is where every pre-release marker we use lives -
+      # dash-separated (-rc.2, -rc1, -alpha, -beta-3, -dirty) or dot-separated
+      # (.dummy). Order matters: exclusions are evaluated after the inclusion.
+      # The "Determine release type" step is the authoritative gate; these globs
+      # just avoid spending a build on a tag that could never be published.
       - 'v*-n4k.nirmata.*'
+      - '!v*-n4k.nirmata.*-*'
+      - '!v*-n4k.nirmata.*.*'
   workflow_dispatch:
     inputs:
       tag:
         description: >
           Tag to release.
-          Use a *-dirty suffix for testing (creates a draft only — Chainguard Factory will ignore it).
+          Non-GA tags (e.g. a *-dirty or *-rc.N suffix) create a draft only — Chainguard Factory will ignore it.
           Example: v1.17.0-n4k.nirmata.3-dirty
         required: true
         type: string
@@ -80,12 +96,15 @@ jobs:
         id: release-type
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          if [[ "$VERSION" == *"-dirty"* ]]; then
-            echo "is_dirty=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Dirty tag detected ($VERSION) — will create a DRAFT release only. Chainguard Factory will not pick it up."
-          else
-            echo "is_dirty=false" >> "$GITHUB_OUTPUT"
+          # A GA tag is exactly vX.Y.Z-n4k.nirmata.N and nothing more. Matching GA
+          # positively means any unrecognised or future suffix is treated as a
+          # pre-release and stops at draft, rather than being published by default.
+          if [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-n4k\.nirmata\.[0-9]+$ ]]; then
+            echo "is_ga=true" >> "$GITHUB_OUTPUT"
             echo "::notice::GA tag detected ($VERSION) — will create and publish release to Chainguard Factory."
+          else
+            echo "is_ga=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Pre-release tag detected ($VERSION) — will create a DRAFT release only. Chainguard Factory will not pick it up."
           fi
 
       - name: Setup Go
@@ -114,8 +133,8 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: make chainguard-github-release
 
-      - name: Publish release (GA tags only — skipped for dirty tags)
-        if: steps.release-type.outputs.is_dirty == 'false'
+      - name: Publish release (GA tags only — pre-releases stop at draft)
+        if: steps.release-type.outputs.is_ga == 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
