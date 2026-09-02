@@ -43,9 +43,19 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            echo "TEST_GIT_BRANCH=$PR_BASE_REF" >> $GITHUB_ENV
+            CANDIDATE_BRANCH="$PR_BASE_REF"
           else
-            echo "TEST_GIT_BRANCH=$REF_NAME" >> $GITHUB_ENV
+            CANDIDATE_BRANCH="$REF_NAME"
+          fi
+          # enterprise-kyverno release branches carry an "-n4k" suffix
+          # (e.g. release-1.18-n4k) that kyverno/policies branches don't
+          # (e.g. release-1.18); strip it before matching upstream.
+          UPSTREAM_BRANCH="${CANDIDATE_BRANCH%-n4k}"
+          if git ls-remote --exit-code --heads https://github.com/kyverno/policies "$UPSTREAM_BRANCH" >/dev/null 2>&1; then
+            echo "TEST_GIT_BRANCH=$UPSTREAM_BRANCH" >> $GITHUB_ENV
+          else
+            echo "no $UPSTREAM_BRANCH branch in kyverno/policies, falling back to main" >&2
+            echo "TEST_GIT_BRANCH=main" >> $GITHUB_ENV
           fi
       - name: Test CLI
         run: |

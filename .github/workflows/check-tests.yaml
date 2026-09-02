@@ -13,7 +13,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow_ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   # Credentials for the private Nirmata Go modules (license-guardian). Consumed by
