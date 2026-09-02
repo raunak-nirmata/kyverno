@@ -1765,11 +1765,72 @@ func (w webhookConfig) merge(other webhookConfig) {
 	}
 }
 
+// inferWildcardScope determines the webhook scope for wildcard (`*`) matches
+// in a ClusterPolicy. If all wildcard matches are limited to specific
+// namespaces (via `namespaces` or `namespaceSelector`), the webhook is scoped
+// to Namespaced. Otherwise, it remains AllScopes to preserve existing behavior.
+//
+// Every ResourceDescription is judged on its own namespace constraints, so a
+// match.all that spreads the wildcard and the namespace filter across separate
+// entries — all: [{kinds: ["*"]}, {namespaces: ["foo"]}] — still yields
+// AllScopes even though the combination only ever selects namespaced
+// resources. That is deliberate: narrowing the scope requires proving no
+// cluster-scoped resource can match, and correlating constraints across
+// entries (with operators, selectors and exclude blocks in play) is not a
+// sound way to prove it. Keep the per-description reading; a webhook that
+// intercepts too much is recoverable, one that intercepts too little silently
+// stops enforcing policy.
+func inferWildcardScope(rules []kyvernov1.Rule) admissionregistrationv1.ScopeType {
+	isNamespaceConstrained := func(rd kyvernov1.ResourceDescription) bool {
+		return len(rd.Namespaces) != 0 || rd.NamespaceSelector != nil
+	}
+	hasWildcardKind := func(kinds []string) bool {
+		for _, k := range kinds {
+			// group/version-scoped wildcards such as `apps/v1/*` parse to kind
+			// `*` too. Note `apps/*` does not: it parses as kind `apps` with all
+			// subresources, so it is not a wildcard kind here.
+			if _, _, kind, _ := kubeutils.ParseKindSelector(k); kind == "*" {
+				return true
+			}
+		}
+		return false
+	}
+	hasWildcard := false
+	for _, rule := range rules {
+		match := rule.MatchResources
+		descriptions := make([]kyvernov1.ResourceDescription, 0)
+		if len(match.ResourceDescription.Kinds) != 0 {
+			descriptions = append(descriptions, match.ResourceDescription)
+		}
+		for _, rf := range match.All {
+			descriptions = append(descriptions, rf.ResourceDescription)
+		}
+		for _, rf := range match.Any {
+			descriptions = append(descriptions, rf.ResourceDescription)
+		}
+		for _, rd := range descriptions {
+			if !hasWildcardKind(rd.Kinds) {
+				continue
+			}
+			hasWildcard = true
+			// a wildcard match with no namespace constraint forces AllScopes
+			if !isNamespaceConstrained(rd) {
+				return admissionregistrationv1.AllScopes
+			}
+		}
+	}
+	if hasWildcard {
+		return admissionregistrationv1.NamespacedScope
+	}
+	return admissionregistrationv1.AllScopes
+}
+
 // mergeWebhook merges the matching kinds of the policy to webhook.rule
 func (c *controller) mergeWebhook(dst *webhook, policy kyvernov1.PolicyInterface, updateValidate bool) (ready bool) {
 	ready = true
 	matched := webhookConfig{}
-	for _, rule := range autogen.Default.ComputeRules(policy, "") {
+	rules := autogen.Default.ComputeRules(policy, "")
+	for _, rule := range rules {
 		// matching kinds in generate policies need to be added to both webhooks
 		if rule.HasGenerate() {
 			// all four operations including CONNECT are needed for generate.
@@ -1798,15 +1859,14 @@ func (c *controller) mergeWebhook(dst *webhook, policy kyvernov1.PolicyInterface
 			matched.merge(collectResourceDescriptions(rule, defaultOperations[updateValidate]...))
 		}
 	}
+	wildcardScope := inferWildcardScope(rules)
+	if policy.IsNamespaced() {
+		wildcardScope = admissionregistrationv1.NamespacedScope
+	}
 	for kind, ops := range matched {
 		var gvrsList []groupVersionResourceSubresourceScope
 		// NOTE: webhook stores GVR in its rules while policy stores GVK in its rules definition
 		group, version, kind, subresource := kubeutils.ParseKindSelector(kind)
-		// if kind or group is `*` we use the scope of the policy
-		policyScope := admissionregistrationv1.AllScopes
-		if policy.IsNamespaced() {
-			policyScope = admissionregistrationv1.NamespacedScope
-		}
 		// if kind is `*` no need to lookup resources
 		if kind == "*" && subresource == "*" {
 			gvrsList = append(gvrsList, groupVersionResourceSubresourceScope{
@@ -1814,7 +1874,7 @@ func (c *controller) mergeWebhook(dst *webhook, policy kyvernov1.PolicyInterface
 				version:     version,
 				resource:    kind,
 				subresource: subresource,
-				scope:       policyScope,
+				scope:       wildcardScope,
 			})
 		} else if kind == "*" && subresource == "" {
 			gvrsList = append(gvrsList, groupVersionResourceSubresourceScope{
@@ -1822,7 +1882,7 @@ func (c *controller) mergeWebhook(dst *webhook, policy kyvernov1.PolicyInterface
 				version:     version,
 				resource:    kind,
 				subresource: subresource,
-				scope:       policyScope,
+				scope:       wildcardScope,
 			})
 		} else if kind == "*" && subresource != "" {
 			gvrsList = append(gvrsList, groupVersionResourceSubresourceScope{
@@ -1830,7 +1890,7 @@ func (c *controller) mergeWebhook(dst *webhook, policy kyvernov1.PolicyInterface
 				version:     version,
 				resource:    kind,
 				subresource: subresource,
-				scope:       policyScope,
+				scope:       wildcardScope,
 			})
 		} else {
 			gvrss, err := c.discoveryClient.FindResources(group, version, kind, subresource)

@@ -1,3 +1,9 @@
+## Unreleased
+
+### Note
+
+- **Behavior change:** a `ClusterPolicy` whose rule matches wildcard kinds (`*`) and constrains the match to specific namespaces (via `namespaces` or `namespaceSelector`) now registers its webhook rule with `scope: Namespaced` instead of `scope: "*"`. Previously such a policy intercepted every cluster-scoped resource in the cluster, because cluster-scoped resources ignore namespace filters; this could reentrantly deadlock the admission path (for example on `SubjectAccessReview`). Wildcard matches with no namespace constraint keep `scope: "*"`, and namespaced `Policy` behavior is unchanged. If you relied on a namespace-constrained wildcard policy also applying to cluster-scoped resources, drop the namespace filter or add an explicit rule for those kinds.
+
 ## v1.13.0
 
 ### Note
