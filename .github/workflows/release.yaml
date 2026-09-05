@@ -380,6 +380,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          # GoReleaser needs full history to find the previous tag and build
+          # the complete tag-to-tag changelog. A shallow clone limits the
+          # changelog to a single commit.
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-tags: true
       - uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
@@ -396,20 +400,12 @@ jobs:
       - uses: creekorful/goreportcard-action@1f35ced8cdac2cba28c9a2f2288a16aacfd507f9 # v1.0
       - name: Install Cosign
         uses: ./.github/actions/tools/cosign
-      - name: Make Release
-        env:
-          VERSION: ${{ github.ref_name }}
-        run: |
-          rm -rf release
-          mkdir release
-          make release-notes > release/release-notes.out
-          cat release/release-notes.out
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@e24998b8b67b290c2fa8b7c14fcfa7de2c5c9b8c # v7.1.0
         with:
           distribution: goreleaser
           version: latest
-          args: release --clean --timeout 90m --release-notes=release/release-notes.out
+          args: release --clean --timeout 90m
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
