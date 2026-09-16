@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "tag_scanned": "none",
+  "release_branch": "release-1.18-n4k",
+  "generated_at": "2026-09-15T10:07:16Z",
+  "scanners": [
+    "trivy",
+    "grype"
+  ],
+  "findings": [
+    {
+      "id": "GO-2026-6354",
+      "severity": "HIGH",
+      "route": "go-module",
+      "action": "Bump module version",
+      "status": "fixed",
+      "pkg": "golang.org/x/crypto",
+      "installed": "v0.55.0",
+      "fixed": "v0.56.0",
+      "images": [
+        "kubectl-kyverno"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "GO-2026-6355",
+      "severity": "HIGH",
+      "route": "go-module",
+      "action": "Bump module version",
+      "status": "fixed",
+      "pkg": "golang.org/x/crypto",
+      "installed": "v0.55.0",
+      "fixed": "v0.56.0",
+      "images": [
+        "kubectl-kyverno"
+      ],
+      "notes": ""
+    }
+  ],
+  "ci_gate_report": "# scan: mode=ci-gate severity=CRITICAL,HIGH scanner=both refs=/tmp/cve-fix-loop.GQdYXp/refs-iter-1.txt images=7\n# raw reports -> /tmp/cve-fix-loop.GQdYXp/ci-gate\n# deduped findings TSV (for route.py) -> /tmp/cve-fix-loop.GQdYXp/ci-gate/_deduped.tsv\n# [trivy] scanning ko.local/github.com/kyverno/kyverno/cmd/kyverno-init:93f17d16b532cb2e5bda3a870e7008f4732d3494ac3e356b900e8bff5ff0694b\n# [grype] scanning ko.local/github.com/kyverno/kyverno/cmd/kyverno-init:93f17d16b532cb2e5bda3a870e7008f4732d3494ac3e356b900e8bff5ff0694b\n# [trivy] scanning ko.local/github.com/kyverno/kyverno/cmd/kyverno:f3af894a1ab4b1bd1629bdbf32d4d704dee058262738fbbb4c35bc588eaab9ca\n# [grype] scanning ko.local/github.com/kyverno/kyverno/cmd/kyverno:f3af894a1ab4b1bd1629bdbf32d4d704dee058262738fbbb4c35bc588eaab9ca\n# [trivy] scanning ko.local/github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno:10d0b4e645cef3add271ebee208b03dd06b7f07fafe54894eb6fe11ffc22ff4f\n# [grype] scanning ko.local/github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno:10d0b4e645cef3add271ebee208b03dd06b7f07fafe54894eb6fe11ffc22ff4f\n# [trivy] scanning ko.local/github.com/kyverno/kyverno/cmd/cleanup-controller:dab40855a17f3ae89308ede8bee03ecdc565d6bd0684a58f93bc5661510bf41d\n# [grype] scanning ko.local/github.com/kyverno/kyverno/cmd/cleanup-controller:dab40855a17f3ae89308ede8bee03ecdc565d6bd0684a58f93bc5661510bf41d\n# [trivy] scanning ko.local/github.com/kyverno/kyverno/cmd/reports-controller:6ad3e6e55794be4ed62b591c53587e815ba82a6cc5f6b82e1d8fc0b6a0be528f\n# [grype] scanning ko.local/github.com/kyverno/kyverno/cmd/reports-controller:6ad3e6e55794be4ed62b591c53587e815ba82a6cc5f6b82e1d8fc0b6a0be528f\n# [trivy] scanning ko.local/github.com/kyverno/kyverno/cmd/background-controller:b398579a9bd7ba8d1dab52e3d3b746dcb35d6f105b75e5acd7c10020c473d682\n# [grype] scanning ko.local/github.com/kyverno/kyverno/cmd/background-controller:b398579a9bd7ba8d1dab52e3d3b746dcb35d6f105b75e5acd7c10020c473d682\n# [trivy] scanning ko.local/github.com/kyverno/kyverno/cmd/readiness-checker:92145b84060a1e9dd0ff49e5888255509f5ec65f762fae3b4e1fe7ae9afda30a\n# [grype] scanning ko.local/github.com/kyverno/kyverno/cmd/readiness-checker:92145b84060a1e9dd0ff49e5888255509f5ec65f762fae3b4e1fe7ae9afda30a\nCLEAN: no CRITICAL,HIGH findings (both) across 7 images (refs=/tmp/cve-fix-loop.GQdYXp/refs-iter-1.txt)\n"
+}
