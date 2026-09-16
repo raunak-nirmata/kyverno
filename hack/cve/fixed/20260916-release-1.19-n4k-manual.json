@@ -1,0 +1,90 @@
+{
+  "schema": 1,
+  "tag_scanned": "v1.19.0-n4k.nirmata.1",
+  "release_branch": "release-1.19-n4k",
+  "generated_at": "2026-09-16T00:00:00Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-5qq8-67g6-4h2w",
+      "severity": "CRITICAL",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "< 1.19.1",
+      "fixed": "1.19.1",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller"
+      ],
+      "notes": "Percent-encoded dot-segments (%2e%2e) in a namespaced Policy apiCall urlPath bypassed the namespace clamp, letting a tenant POST cluster-scoped objects (for example MutatingWebhookConfigurations) as the Kyverno ServiceAccount and escalate to cluster admin; fixed by URL-decoding the path before normalizing and validating it (upstream 7ac176ac, on this branch as e58e1840d)."
+    },
+    {
+      "id": "GHSA-c5qq-7g2q-cpqp",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "< 1.19.1",
+      "fixed": "1.19.1",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller"
+      ],
+      "notes": "The same %2e%2e path-traversal in namespaced Policy apiCall urlPath let a tenant read resources in other namespaces with the Kyverno ServiceAccount; fixed by the same URL-decode-before-clamp hardening (upstream 7ac176ac, on this branch as e58e1840d)."
+    },
+    {
+      "id": "GHSA-q825-p383-r9v5",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "< 1.19.1",
+      "fixed": "1.19.1",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller"
+      ],
+      "notes": "The legacy apiCall service executor and the GlobalContextEntry external-API path skipped the SSRF host/CIDR blocklist and sent the scoped ServiceAccount token to arbitrary hosts; fixed by wiring the egress blocklist, redirect checks, and token gating into that executor (upstream #17234/#17299/#17310, on this branch as e090f5287, 7c148f984, and 3fdd28ede)."
+    },
+    {
+      "id": "GHSA-5cjf-wwfg-pj4c",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": ">= 1.14.0, < 1.19.1",
+      "fixed": "1.19.1",
+      "images": [
+        "kyverno",
+        "reports-controller"
+      ],
+      "notes": "ImageValidatingPolicy ignored PolicyException.spec.images/allowedValues, so an exception meant for one image skipped signature verification for every image on a matched resource; fixed by refusing to treat a partial (image-scoped) exception as a full exemption (upstream #17307, on this branch as 9d19f4683)."
+    },
+    {
+      "id": "GHSA-59v6-2x73-wfg4",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": ">= 1.16.0, < 1.19.1",
+      "fixed": "1.19.1",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller"
+      ],
+      "notes": "The CEL globalcontext library was not namespace-confined, so a tenant-authored Namespaced*Policy could read cross-namespace GlobalContextEntry data; fixed by denying globalContext.* in namespaced policies at admission and runtime (upstream #17377, release-1.19 backport #17455 backported to this branch in PR #944)."
+    }
+  ]
+}
