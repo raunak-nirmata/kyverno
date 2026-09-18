@@ -7036,6 +7036,17 @@ spec:
                       additionalProperties:
                         items:
                           properties:
+                            filter:
+                              description: |-
+                                Filter is an optional value to match against 'key' during wildcard array expansion.
+                                When set, only array elements where the field named by 'key' equals this value
+                                are extracted as image references. Requires 'key' to be set.
+                                This is useful when a wildcard path expands an array containing both image and
+                                non-image elements, and only specific elements should be treated as images.
+                                Filter applies at the terminal wildcard only; intermediate wildcards in nested
+                                paths are expanded without filtering.
+                                Filter only applies to wildcard expansion over arrays, not maps.
+                              type: string
                             jmesPath:
                               description: |-
                                 JMESPath is an optional JMESPath expression to apply to the image value.
@@ -12142,6 +12153,17 @@ spec:
                           additionalProperties:
                             items:
                               properties:
+                                filter:
+                                  description: |-
+                                    Filter is an optional value to match against 'key' during wildcard array expansion.
+                                    When set, only array elements where the field named by 'key' equals this value
+                                    are extracted as image references. Requires 'key' to be set.
+                                    This is useful when a wildcard path expands an array containing both image and
+                                    non-image elements, and only specific elements should be treated as images.
+                                    Filter applies at the terminal wildcard only; intermediate wildcards in nested
+                                    paths are expanded without filtering.
+                                    Filter only applies to wildcard expansion over arrays, not maps.
+                                  type: string
                                 jmesPath:
                                   description: |-
                                     JMESPath is an optional JMESPath expression to apply to the image value.
@@ -17133,6 +17155,17 @@ spec:
                       additionalProperties:
                         items:
                           properties:
+                            filter:
+                              description: |-
+                                Filter is an optional value to match against 'key' during wildcard array expansion.
+                                When set, only array elements where the field named by 'key' equals this value
+                                are extracted as image references. Requires 'key' to be set.
+                                This is useful when a wildcard path expands an array containing both image and
+                                non-image elements, and only specific elements should be treated as images.
+                                Filter applies at the terminal wildcard only; intermediate wildcards in nested
+                                paths are expanded without filtering.
+                                Filter only applies to wildcard expansion over arrays, not maps.
+                              type: string
                             jmesPath:
                               description: |-
                                 JMESPath is an optional JMESPath expression to apply to the image value.
@@ -22173,6 +22206,17 @@ spec:
                           additionalProperties:
                             items:
                               properties:
+                                filter:
+                                  description: |-
+                                    Filter is an optional value to match against 'key' during wildcard array expansion.
+                                    When set, only array elements where the field named by 'key' equals this value
+                                    are extracted as image references. Requires 'key' to be set.
+                                    This is useful when a wildcard path expands an array containing both image and
+                                    non-image elements, and only specific elements should be treated as images.
+                                    Filter applies at the terminal wildcard only; intermediate wildcards in nested
+                                    paths are expanded without filtering.
+                                    Filter only applies to wildcard expansion over arrays, not maps.
+                                  type: string
                                 jmesPath:
                                   description: |-
                                     JMESPath is an optional JMESPath expression to apply to the image value.
@@ -28178,6 +28222,17 @@ spec:
                       additionalProperties:
                         items:
                           properties:
+                            filter:
+                              description: |-
+                                Filter is an optional value to match against 'key' during wildcard array expansion.
+                                When set, only array elements where the field named by 'key' equals this value
+                                are extracted as image references. Requires 'key' to be set.
+                                This is useful when a wildcard path expands an array containing both image and
+                                non-image elements, and only specific elements should be treated as images.
+                                Filter applies at the terminal wildcard only; intermediate wildcards in nested
+                                paths are expanded without filtering.
+                                Filter only applies to wildcard expansion over arrays, not maps.
+                              type: string
                             jmesPath:
                               description: |-
                                 JMESPath is an optional JMESPath expression to apply to the image value.
@@ -33285,6 +33340,17 @@ spec:
                           additionalProperties:
                             items:
                               properties:
+                                filter:
+                                  description: |-
+                                    Filter is an optional value to match against 'key' during wildcard array expansion.
+                                    When set, only array elements where the field named by 'key' equals this value
+                                    are extracted as image references. Requires 'key' to be set.
+                                    This is useful when a wildcard path expands an array containing both image and
+                                    non-image elements, and only specific elements should be treated as images.
+                                    Filter applies at the terminal wildcard only; intermediate wildcards in nested
+                                    paths are expanded without filtering.
+                                    Filter only applies to wildcard expansion over arrays, not maps.
+                                  type: string
                                 jmesPath:
                                   description: |-
                                     JMESPath is an optional JMESPath expression to apply to the image value.
@@ -38277,6 +38343,17 @@ spec:
                       additionalProperties:
                         items:
                           properties:
+                            filter:
+                              description: |-
+                                Filter is an optional value to match against 'key' during wildcard array expansion.
+                                When set, only array elements where the field named by 'key' equals this value
+                                are extracted as image references. Requires 'key' to be set.
+                                This is useful when a wildcard path expands an array containing both image and
+                                non-image elements, and only specific elements should be treated as images.
+                                Filter applies at the terminal wildcard only; intermediate wildcards in nested
+                                paths are expanded without filtering.
+                                Filter only applies to wildcard expansion over arrays, not maps.
+                              type: string
                             jmesPath:
                               description: |-
                                 JMESPath is an optional JMESPath expression to apply to the image value.
@@ -43317,6 +43394,17 @@ spec:
                           additionalProperties:
                             items:
                               properties:
+                                filter:
+                                  description: |-
+                                    Filter is an optional value to match against 'key' during wildcard array expansion.
+                                    When set, only array elements where the field named by 'key' equals this value
+                                    are extracted as image references. Requires 'key' to be set.
+                                    This is useful when a wildcard path expands an array containing both image and
+                                    non-image elements, and only specific elements should be treated as images.
+                                    Filter applies at the terminal wildcard only; intermediate wildcards in nested
+                                    paths are expanded without filtering.
+                                    Filter only applies to wildcard expansion over arrays, not maps.
+                                  type: string
                                 jmesPath:
                                   description: |-
                                     JMESPath is an optional JMESPath expression to apply to the image value.
