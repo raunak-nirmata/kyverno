@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Performance benchmarks
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - main
+      - release-*
+
+concurrency:
+  group: ${{ github.workflow_ref }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Credentials for the private Nirmata Go modules (license-guardian). Consumed by
+  # .github/actions/go/install. DEPLOYMENT_* are organisation secrets.
+  GOPRIVATE: github.com/nirmata
+  GH_DEP_USERNAME: ${{ secrets.DEPLOYMENT_USERNAME }}
+  GH_DEP_PAT: ${{ secrets.DEPLOYMENT_PAT }}
+
+jobs:
+  perf:
+    name: Performance benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Go
+        uses: ./.github/actions/go/setup
+        with:
+          gobuild-cache-prefix: gobuild-unit-tests
+      - name: Check performance regression
+        run: make check-perf

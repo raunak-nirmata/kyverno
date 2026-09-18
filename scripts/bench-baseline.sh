@@ -131,10 +131,9 @@ trap 'rm -f "$MAXES" "$GATED_NAMES" "$TMP_OUT"' EXIT
 #
 # Format: <benchmark-name> <max_allocs_per_op> <max_bytes_per_op>
 #
-# This gate runs post-merge (see the `perf` job in
-# .github/workflows/check-tests.yaml), not per pull request: a failure files
-# or updates a workflow-failure issue on main rather than blocking anyone's
-# PR, which is what makes it safe to keep this headroom tight (see
+# This gate runs post-merge (see .github/workflows/check-perf.yaml), not per
+# pull request: a failure surfaces on the branch rather than blocking
+# anyone's PR, which is what makes it safe to keep this headroom tight (see
 # docs/dev/README.md, "Performance benchmarks").
 #
 # Values below are measured on linux/amd64 (the CI platform - allocation
