@@ -43,11 +43,7 @@ func TestBuildWebhookRulesFineGrainedNamespacedImagePolicyAutogen(t *testing.T) 
 	webhooks := buildWebhookRules(
 		config.NewDefaultConfiguration(false),
 		"",
-		// n4k's config package doesn't have a dedicated NIVPol webhook name yet
-		// (upstream added it in kyverno/kyverno#17617, not yet backported); the
-		// webhook name string is only used to build the webhook object's Name
-		// field and doesn't affect the behavior this test checks.
-		"nivpol.validate.kyverno.svc",
+		config.NamespacedImageValidatingPolicyValidateWebhookName,
 		"/nivpol/validate",
 		0,
 		nil,
