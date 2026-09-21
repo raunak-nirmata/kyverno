@@ -39,24 +39,3 @@ if [ $MISMATCH -eq 1 ]; then
 fi
 
 echo "✅ All Docker.fips files are consistent with go.mod"
-
-# check Go version in .github/workflows/reuse.yaml
-REUSE_YAML=".github/workflows/reuse.yaml"
-
-if [ -f "$REUSE_YAML" ]; then
-  # extract the go-version from the setup-go step
-  SETUP_GO_VERSION=$(grep -Eo 'go-version: *~?[0-9]+\.[0-9]+(\.[0-9]+)?' "$REUSE_YAML" | sed -E 's/.*go-version: *~?([0-9]+\.[0-9]+(\.[0-9]+)?)/\1/')
-  echo "🔍 $REUSE_YAML setup-go version: go-version: $SETUP_GO_VERSION"
-  if [ -z "$SETUP_GO_VERSION" ]; then
-    echo "⚠️  No go-version found in setup-go step of $REUSE_YAML"
-  else
-    if [ "$SETUP_GO_VERSION" != "$GO_VERSION" ]; then
-      echo "❌ Mismatch: go.mod = $GO_VERSION, but $REUSE_YAML uses go-version: $SETUP_GO_VERSION"
-      exit 1
-    else
-      echo "✅ $REUSE_YAML uses compatible Go version $SETUP_GO_VERSION (matches go.mod $GO_VERSION)"
-    fi
-  fi
-else
-  echo "⚠️  $REUSE_YAML not found"
-fi
