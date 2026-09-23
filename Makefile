@@ -861,6 +861,8 @@ codegen-cli-api-group-resources: $(KIND)
 	@kubectl apply --server-side -f config/crds/policyreport/ --context kind-codegen-cli-api-group-resources
 	@kubectl apply --server-side -f config/crds/reports/ --context kind-codegen-cli-api-group-resources
 	@kubectl apply --server-side -f config/crds/nirmata/ --context kind-codegen-cli-api-group-resources
+	# server-side apply returns before the API server publishes the new groups in discovery
+	@kubectl wait --for condition=established --timeout=60s crd --all --context kind-codegen-cli-api-group-resources
 	@$(API_GROUP_RESOURCES) > cmd/cli/kubectl-kyverno/data/api-group-resources.json
 	@$(KIND) delete cluster --name codegen-cli-api-group-resources
 
