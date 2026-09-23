@@ -190,6 +190,20 @@ data:
 apiVersion: v1
 kind: ConfigMap
 metadata:
+  name: kyverno-license-state
+  namespace: kyverno
+  labels:
+    app.kubernetes.io/component: config
+    app.kubernetes.io/instance: kyverno
+    app.kubernetes.io/part-of: kyverno
+    app.kubernetes.io/version: latest
+  annotations:
+    # Kept on uninstall so a reinstall does not hand out a fresh trial window.
+    helm.sh/resource-policy: "keep"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
   name: kyverno-metrics
   namespace: kyverno
   labels:
@@ -87245,6 +87259,41 @@ spec:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
+  name: kyverno:admission-controller:licensing
+  labels:
+    app.kubernetes.io/component: admission-controller
+    app.kubernetes.io/instance: kyverno
+    app.kubernetes.io/name: kyverno-admission-controller
+    app.kubernetes.io/part-of: kyverno
+    app.kubernetes.io/version: latest
+    rbac.kyverno.io/aggregate-to-admission-controller: "true"
+rules:
+  # Licensed node units are derived from each node's memory capacity.
+  - apiGroups:
+      - ''
+    resources:
+      - nodes
+    verbs:
+      - get
+      - list
+  # Counted toward the policy cap, but granted only to the cleanup controller by
+  # default. watch is required alongside list: the live policy counter behind the
+  # capacity gate reads these through informers, and an informer denied watch
+  # lists once then retries forever, leaving the counter permanently unsynced so
+  # the gate silently falls back to the stale evaluated count.
+  - apiGroups:
+      - policies.kyverno.io
+    resources:
+      - deletingpolicies
+      - namespaceddeletingpolicies
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
   name: kyverno:admission-controller
   labels:
     app.kubernetes.io/component: admission-controller
@@ -87278,6 +87327,14 @@ rules:
       - customresourcedefinitions
     verbs:
       - get
+  - apiGroups:
+      - apiregistration.k8s.io
+    resources:
+      - apiservices
+    verbs:
+      - get
+      - list
+      - watch
   - apiGroups:
       - admissionregistration.k8s.io
     resources:
@@ -87482,6 +87539,14 @@ rules:
     verbs:
       - get
   - apiGroups:
+      - apiregistration.k8s.io
+    resources:
+      - apiservices
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
       - kyverno.io
     resources:
       - policies
@@ -87645,6 +87710,13 @@ rules:
       - customresourcedefinitions
     verbs:
       - get
+  - apiGroups:
+      - apiregistration.k8s.io
+    resources:
+      - apiservices
+    verbs:
+      - get
+      - list
   - apiGroups:
       - admissionregistration.k8s.io
     resources:
@@ -88006,6 +88078,14 @@ rules:
     verbs:
       - get
   - apiGroups:
+      - apiregistration.k8s.io
+    resources:
+      - apiservices
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
       - ''
     resources:
       - configmaps
@@ -88297,6 +88377,26 @@ rules:
     resourceNames:
       - kyverno
       - kyverno-metrics
+  # Licensing trial and grace bookkeeping. Written only by the leader.
+  - apiGroups:
+      - ''
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - update
+      - patch
+    resourceNames:
+      - kyverno-license-state
+  # `create` cannot be restricted by resourceNames, so it is namespace-scoped. Only
+  # needed to self-heal a deleted ConfigMap, and this Role already grants create on
+  # secrets here.
+  - apiGroups:
+      - ''
+    resources:
+      - configmaps
+    verbs:
+      - create
   - apiGroups:
       - coordination.k8s.io
     resources:
@@ -88877,6 +88977,8 @@ spec:
             value: kyverno
           - name: METRICS_CONFIG
             value: kyverno-metrics
+          - name: LICENSE_STATE_CONFIG
+            value: kyverno-license-state
           - name: KYVERNO_NAMESPACE
             valueFrom:
               fieldRef:
@@ -88901,7 +89003,7 @@ spec:
               path: /health/liveness
               port: 9443
               scheme: HTTPS
-            initialDelaySeconds: 2
+            initialDelaySeconds: 7
             periodSeconds: 6
           livenessProbe:
             failureThreshold: 2
@@ -89192,7 +89294,7 @@ spec:
               path: /health/liveness
               port: 9443
               scheme: HTTPS
-            initialDelaySeconds: 2
+            initialDelaySeconds: 7
             periodSeconds: 6
           livenessProbe:
             failureThreshold: 2

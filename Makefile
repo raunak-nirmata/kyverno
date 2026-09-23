@@ -856,11 +856,11 @@ codegen-cli-api-group-resources: $(KIND)
 	@$(KIND) delete cluster --name codegen-cli-api-group-resources || true
 	@$(KIND) create cluster --name codegen-cli-api-group-resources --image $(KIND_IMAGE) --config ./scripts/config/kind/codegen.yaml
 	@echo Installing CRDs for API discovery... >&2
-	@kubectl apply -f config/crds/kyverno/ --context kind-codegen-cli-api-group-resources
-	@kubectl apply -f config/crds/policies.kyverno.io/ --context kind-codegen-cli-api-group-resources
-	@kubectl apply -f config/crds/policyreport/ --context kind-codegen-cli-api-group-resources
-	@kubectl apply -f config/crds/reports/ --context kind-codegen-cli-api-group-resources
-	@kubectl apply -f config/crds/nirmata/ --context kind-codegen-cli-api-group-resources
+	@kubectl apply --server-side -f config/crds/kyverno/ --context kind-codegen-cli-api-group-resources
+	@kubectl apply --server-side -f config/crds/policies.kyverno.io/ --context kind-codegen-cli-api-group-resources
+	@kubectl apply --server-side -f config/crds/policyreport/ --context kind-codegen-cli-api-group-resources
+	@kubectl apply --server-side -f config/crds/reports/ --context kind-codegen-cli-api-group-resources
+	@kubectl apply --server-side -f config/crds/nirmata/ --context kind-codegen-cli-api-group-resources
 	@$(API_GROUP_RESOURCES) > cmd/cli/kubectl-kyverno/data/api-group-resources.json
 	@$(KIND) delete cluster --name codegen-cli-api-group-resources
 
