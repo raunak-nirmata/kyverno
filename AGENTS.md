@@ -205,6 +205,19 @@ Controller code is primarily in `pkg/controllers/`. Webhook handlers are in `pkg
 - For e2e-testable changes, write conformance tests using [chainsaw](https://kyverno.github.io/chainsaw/latest/quick-start/) in `test/conformance/`
 - Run `make verify-codegen` to ensure generated code is up to date before submitting
 
+## Security fixes that change code
+
+The CVE automation records dependency and base-image fixes in `hack/cve/fixed/` on its own, but it never emits an entry for a vulnerability fixed by changing code. Those are invisible to the docs CVE table unless you add one.
+
+When you fix a vulnerability by changing code, commit a manual entry alongside the fix:
+
+- Add `hack/cve/fixed/<YYYYMMDD>-<release-branch>-manual.json`, one finding per advisory, with `route: code-change` and `action: "Code change"`.
+- Each release branch owns its own `hack/cve/fixed/` directory, so a backported fix needs one entry per branch, with that branch's version range and commit SHA.
+- The file must sit directly in `hack/cve/fixed/`, since the collector and the CI gate only match that level.
+- Validate before pushing. The validator lives on `main`, not on release branches, so read it from there: `git show origin/main:hack/cve/validate-fixed-json.py > /tmp/v.py && python3 /tmp/v.py hack/cve/fixed/<file>.json`.
+
+Run the `cve-record` skill to do this, or see [hack/cve/README.md](./hack/cve/README.md) for the full schema and the controlled `action` vocabulary.
+
 ## Useful References
 
 - [Development Guide](./DEVELOPMENT.md) — Full build, test, debug, and deploy instructions
