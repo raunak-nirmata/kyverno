@@ -66,16 +66,27 @@ func (c *compiledPolicy) Evaluate(ctx context.Context, ictx imagedataloader.Imag
 	// check if the resource matches an exception
 	if len(c.exceptions) > 0 {
 		matchedExceptions := make([]*policiesv1beta1.PolicyException, 0)
+		fullExemptionFound := false
 		for _, polex := range c.exceptions {
 			match, err := c.match(ctx, attr, request, namespace, polex.MatchConditions)
 			if err != nil {
+				if fullExemptionFound {
+					// an exemption was already granted; a broken later exception must not negate it
+					continue
+				}
 				return nil, err
 			}
 			if match {
+				// IVPol does not yet expose exceptions.allowedImages / allowedValues to CEL, so a
+				// partial exception must not skip evaluation for images it never listed.
+				if len(polex.Exception.Spec.Images) > 0 || len(polex.Exception.Spec.AllowedValues) > 0 {
+					continue
+				}
 				matchedExceptions = append(matchedExceptions, polex.Exception)
+				fullExemptionFound = true
 			}
 		}
-		if len(matchedExceptions) > 0 {
+		if fullExemptionFound {
 			return &EvaluationResult{Exceptions: matchedExceptions}, nil
 		}
 	}

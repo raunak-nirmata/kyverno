@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "tag_scanned": "none",
+  "release_branch": "release-1.18-n4k",
+  "generated_at": "2026-09-30T00:00:00Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-5cjf-wwfg-pj4c",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": ">= 1.18.0, < 1.18.0-n4k.nirmata.7",
+      "fixed": "1.18.0-n4k.nirmata.7",
+      "images": [
+        "kyverno"
+      ],
+      "notes": "The ImageValidatingPolicy evaluator ignored a PolicyException's spec.images and spec.allowedValues fields. Any exception whose policyRefs and matchConditions matched a resource skipped image signature verification for the entire resource rather than only for the images or values it listed, so an exception intended to exempt one trusted image exempted every image on that resource. ValidatingPolicy, GeneratingPolicy and MutatingPolicy already treated the same fields as a partial exemption. The fix skips evaluation only for a true full exemption, leaving partial exceptions to be evaluated normally. Commit 4e35a07a2."
+    }
+  ]
+}
