@@ -1,0 +1,175 @@
+# Triggered by kyverno-notation-aws when a chart is released (repository_dispatch).
+# Vendors the new chart .tgz on each target release branch and opens PRs.
+
+name: Sync kyverno-notation-aws
+
+permissions:
+  contents: read
+
+on:
+  # The sender lives in kyverno-notation-aws's release workflow. Until that is
+  # wired up, workflow_dispatch makes this runnable by hand rather than inert.
+  repository_dispatch:
+    types: [kyverno-notation-aws-released]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: kyverno-notation-aws chart version to vendor, for example 2.0.0-rc.1
+        required: true
+        type: string
+
+env:
+  NOTATION_AWS_CHART_NAME: kyverno-notation-aws
+  NOTATION_AWS_OCI_REPO: oci://ghcr.io/nirmata/charts
+  KYVERNO_CHART_PATH: charts/kyverno
+  # Only branches that declare the dependency. On a branch without it the yq
+  # selector matches nothing, so Chart.yaml is left alone while the archive is
+  # still copied in — an orphan .tgz in a PR that looks legitimate.
+  TARGET_BRANCHES: release-1.18-n4k
+
+jobs:
+  sync-kyverno-notation-aws:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Get kyverno-notation-aws version
+        id: version
+        run: |
+          v="${{ github.event.client_payload.kyverno_notation_aws_version || inputs.version }}"
+          if [ -z "$v" ]; then
+            echo "::error::No version supplied (client_payload.kyverno_notation_aws_version or the version input)"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Triggered for kyverno-notation-aws version $v"
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.NIRMATA_INTERNAL_APP_ID }}
+          private-key: ${{ secrets.NIRMATA_INTERNAL_PRIVATE_KEY }}
+          owner: nirmata
+          repositories: enterprise-kyverno
+
+      - name: Checkout enterprise-kyverno
+        uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Set up tools
+        run: |
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Pull kyverno-notation-aws chart
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p /tmp/upstream-chart
+          helm pull "${NOTATION_AWS_OCI_REPO}/${NOTATION_AWS_CHART_NAME}" \
+            --version "${VERSION}" -d /tmp/upstream-chart
+          tar -xzf "/tmp/upstream-chart/${NOTATION_AWS_CHART_NAME}-${VERSION}.tgz" -C /tmp/upstream-chart
+          echo "Downloaded and extracted ${NOTATION_AWS_CHART_NAME}-${VERSION}.tgz"
+
+      - name: Process each release branch
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          CHART_TGZ="${NOTATION_AWS_CHART_NAME}-${VERSION}.tgz"
+
+          git config user.name "nirmata-internal-app[bot]"
+          git config user.email "nirmata-internal-app[bot]@users.noreply.github.com"
+
+          for TARGET_BRANCH in ${TARGET_BRANCHES//,/ }; do
+            echo "::group::Processing $TARGET_BRANCH"
+
+            FEATURE_BRANCH="chore/kyverno-notation-aws-${VERSION}-${TARGET_BRANCH}"
+
+            git fetch origin "$TARGET_BRANCH"
+            git checkout "$TARGET_BRANCH"
+            git pull origin "$TARGET_BRANCH"
+            git checkout -b "$FEATURE_BRANCH"
+
+            # ---- Capture old version for PR description ----
+            OLD_VERSION=$(yq ".dependencies[] | select(.name == \"${NOTATION_AWS_CHART_NAME}\") | .version" \
+              "${KYVERNO_CHART_PATH}/Chart.yaml")
+
+            # ---- Remove old kyverno-notation-aws .tgz, copy new one ----
+            rm -f "${KYVERNO_CHART_PATH}/charts/${NOTATION_AWS_CHART_NAME}-"*.tgz
+            mkdir -p "${KYVERNO_CHART_PATH}/charts"
+            cp "/tmp/upstream-chart/${CHART_TGZ}" "${KYVERNO_CHART_PATH}/charts/"
+
+            # ---- Update Chart.yaml dependency version (keep repository as-is) ----
+            yq -i "(.dependencies[] | select(.name == \"${NOTATION_AWS_CHART_NAME}\")).version = \"${VERSION}\"" \
+              "${KYVERNO_CHART_PATH}/Chart.yaml"
+
+            # ---- Bump chart patch version, preserving any pre-release suffix ----
+            CURRENT_CHART_VERSION=$(yq '.version' "${KYVERNO_CHART_PATH}/Chart.yaml")
+            BASE_VERSION=$(echo "$CURRENT_CHART_VERSION" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+            SUFFIX=$(echo "$CURRENT_CHART_VERSION" | sed "s/^${BASE_VERSION}//")
+            MAJOR=$(echo "$BASE_VERSION" | cut -d. -f1)
+            MINOR=$(echo "$BASE_VERSION" | cut -d. -f2)
+            PATCH=$(echo "$BASE_VERSION" | cut -d. -f3)
+            NEW_PATCH=$((PATCH + 1))
+            NEW_CHART_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}${SUFFIX}"
+            yq -i ".version = \"${NEW_CHART_VERSION}\"" "${KYVERNO_CHART_PATH}/Chart.yaml"
+
+            # ---- Commit ----
+            git add "${KYVERNO_CHART_PATH}/Chart.yaml" \
+                    "${KYVERNO_CHART_PATH}/charts/"
+
+            if git diff --staged --quiet; then
+              echo "No changes on $TARGET_BRANCH — skipping"
+              git checkout main
+              git branch -D "$FEATURE_BRANCH" 2>/dev/null || true
+              echo "::endgroup::"
+              continue
+            fi
+
+            git commit -m "chore: vendor kyverno-notation-aws ${VERSION} (chart ${NEW_CHART_VERSION})"
+            git push -u origin "$FEATURE_BRANCH"
+
+            # ---- Create PR with rich description ----
+            cat > /tmp/pr-body.md <<EOF
+          ## Summary
+
+          Automated vendor of kyverno-notation-aws chart **${VERSION}** (was ${OLD_VERSION}).
+          N4K chart version bumped to **${NEW_CHART_VERSION}** (was ${CURRENT_CHART_VERSION}).
+
+          ## Changes
+
+          - Replaced \`charts/kyverno/charts/${NOTATION_AWS_CHART_NAME}-${OLD_VERSION}.tgz\` with \`${NOTATION_AWS_CHART_NAME}-${VERSION}.tgz\`
+          - Updated \`Chart.yaml\` dependency version: \`${OLD_VERSION}\` → \`${VERSION}\`
+          - Bumped chart version: \`${CURRENT_CHART_VERSION}\` → \`${NEW_CHART_VERSION}\`
+
+          ## Review Checklist
+
+          - [ ] Verify no breaking changes in kyverno-notation-aws
+          - [ ] Check if new values.yaml keys need documentation
+          - [ ] Confirm the shared license Secret name still matches (see charts/kyverno/values.yaml `kyverno-notation-aws.license.existingSecret`)
+          - [ ] Confirm chart version bump is appropriate
+          EOF
+
+            gh pr create \
+              --base "$TARGET_BRANCH" \
+              --head "$FEATURE_BRANCH" \
+              --title "chore($TARGET_BRANCH): vendor kyverno-notation-aws ${VERSION}" \
+              --body-file /tmp/pr-body.md || true
+
+            git checkout main
+            git branch -D "$FEATURE_BRANCH" 2>/dev/null || true
+            echo "::endgroup::"
+          done
+
+          # ---- Cleanup ----
+          rm -rf /tmp/upstream-chart

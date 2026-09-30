@@ -43,3 +43,5 @@ jobs:
           helm repo update
       - name: Run chart-testing (lint)
         run: ct lint --all --check-version-increment=false --validate-maintainers=false
+      - name: Verify kyverno-notation-aws shares the license Secret
+        run: ./charts/kyverno/ci/scripts/verify-notation-aws-license-secret.sh
