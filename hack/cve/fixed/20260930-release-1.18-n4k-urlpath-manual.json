@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "tag_scanned": "none",
+  "release_branch": "release-1.18-n4k",
+  "generated_at": "2026-09-30T00:00:00Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-5qq8-67g6-4h2w",
+      "severity": "CRITICAL",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": ">= 1.18.0, < 1.18.0-n4k.nirmata.8",
+      "fixed": "1.18.0-n4k.nirmata.8",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "A namespaced Policy's apiCall urlPath was clamped to the policy's own namespace by normalising the path before comparing it, but the normalisation did not decode percent-encoded characters. Encoded dot-segments therefore survived normalisation and escaped the clamp, letting a namespace tenant read resources in other namespaces and create cluster-scoped objects as the admission controller's ServiceAccount. The fix decodes the path once before normalising it, so validation sees the same path the API server would. Cluster-scoped policies are unaffected. Commit 74e022737."
+    },
+    {
+      "id": "GHSA-c5qq-7g2q-cpqp",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": ">= 1.18.0, < 1.18.0-n4k.nirmata.8",
+      "fixed": "1.18.0-n4k.nirmata.8",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "A namespaced Policy's apiCall urlPath was clamped to the policy's own namespace by normalising the path before comparing it, but the normalisation did not decode percent-encoded characters. Encoded dot-segments therefore survived normalisation and escaped the clamp, letting a namespace tenant read resources in other namespaces and create cluster-scoped objects as the admission controller's ServiceAccount. The fix decodes the path once before normalising it, so validation sees the same path the API server would. Cluster-scoped policies are unaffected. Commit 74e022737."
+    }
+  ]
+}

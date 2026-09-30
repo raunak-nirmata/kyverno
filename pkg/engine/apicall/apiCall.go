@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"path"
 	"regexp"
 
@@ -70,8 +71,15 @@ func (a *apiCall) Fetch(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("failed to substitute variables in context entry %s %s: %v", a.entry.Name, a.entry.APICall.URLPath, err)
 	}
 
+	// decode percent-encoded characters (%2e%2e -> ..) so encoded dot-segments cannot bypass the namespace clamp
+	unescapedPath, err := url.PathUnescape(call.APICall.URLPath)
+	if err != nil {
+		// invalid encoding: validate the raw path, the API server rejects it later
+		unescapedPath = call.APICall.URLPath
+	}
+	cleanPath := path.Clean(unescapedPath)
+
 	if a.policyNamespace != "" {
-		cleanPath := path.Clean(call.APICall.URLPath)
 		if matches := namespacePathRegex.FindStringSubmatch(cleanPath); len(matches) > 2 {
 			ns := matches[2]
 			if ns != a.policyNamespace {
