@@ -33,8 +33,12 @@ func Validate(mpol v1beta1.MutatingPolicyLike) ([]string, error) {
 		err = append(err, field.Required(field.NewPath("spec").Child("matchConstraints"), "a matchConstraints with at least one resource rule is required"))
 	}
 
-	if mpol.GetNamespace() != "" && !toggle.AllowHTTPInNamespacedPolicies.Enabled() {
-		if compiler.ExpressionsUseHTTP(mpolExpressions(spec)...) {
+	if mpol.GetNamespace() != "" {
+		exprs := mpolExpressions(spec)
+		if compiler.ExpressionsUseGlobalContext(exprs...) {
+			err = append(err, field.Forbidden(field.NewPath("spec"), "globalContext.* is not allowed in namespaced policies"))
+		}
+		if !toggle.AllowHTTPInNamespacedPolicies.Enabled() && compiler.ExpressionsUseHTTP(exprs...) {
 			err = append(err, field.Forbidden(field.NewPath("spec"), "http.* is not allowed in namespaced policies; set --allowHTTPInNamespacedPolicies to enable"))
 		}
 	}
@@ -74,6 +78,10 @@ func mpolExpressions(spec *v1beta1.MutatingPolicySpec) []string {
 		if m.JSONPatch != nil {
 			exprs = append(exprs, m.JSONPatch.Expression)
 		}
+	}
+	// target selection expressions are compiled and evaluated by the mpol compiler too
+	if spec.TargetMatchConstraints != nil && spec.TargetMatchConstraints.Expression != "" {
+		exprs = append(exprs, spec.TargetMatchConstraints.Expression)
 	}
 	return exprs
 }

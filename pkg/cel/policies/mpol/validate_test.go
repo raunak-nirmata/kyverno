@@ -147,6 +147,34 @@ func TestValidate(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "namespaced policy using globalContext is rejected",
+			pol: &v1beta1.MutatingPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ns-globalcontext-mpol",
+					Namespace: "tenant-ns",
+				},
+				Spec: v1beta1.MutatingPolicySpec{
+					MatchConstraints: &v1.MatchResources{
+						ResourceRules: []v1.NamedRuleWithOperations{
+							{
+								RuleWithOperations: v1.RuleWithOperations{
+									Rule: v1.Rule{
+										APIGroups: []string{""},
+										Resources: []string{"pods"},
+									},
+								},
+							},
+						},
+					},
+					Variables: []v1.Variable{{
+						Name:       "gctx",
+						Expression: `globalContext.get("cluster-entry", "")`,
+					}},
+				},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -162,4 +190,40 @@ func TestValidate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func Test_Validate_NamespacedPolicyRejectsGlobalContextInTargetSelection(t *testing.T) {
+	basePolicy := func(namespace string) *v1beta1.MutatingPolicy {
+		return &v1beta1.MutatingPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "ns-globalcontext-targets-mpol",
+				Namespace: namespace,
+			},
+			Spec: v1beta1.MutatingPolicySpec{
+				MatchConstraints: &v1.MatchResources{
+					ResourceRules: []v1.NamedRuleWithOperations{{
+						RuleWithOperations: v1.RuleWithOperations{
+							Rule: v1.Rule{
+								APIGroups: []string{""},
+								Resources: []string{"pods"},
+							},
+						},
+					}},
+				},
+				TargetMatchConstraints: &v1beta1.TargetMatchConstraints{
+					Expression: `globalContext.get("cluster-entry", "")`,
+				},
+			},
+		}
+	}
+
+	t.Run("globalContext in targetMatchConstraints expression is rejected", func(t *testing.T) {
+		_, err := Validate(basePolicy("tenant-ns"))
+		assert.ErrorContains(t, err, "globalContext.* is not allowed in namespaced policies")
+	})
+
+	t.Run("cluster-scoped policy may use globalContext in target selection", func(t *testing.T) {
+		_, err := Validate(basePolicy(""))
+		assert.NoError(t, err)
+	})
 }

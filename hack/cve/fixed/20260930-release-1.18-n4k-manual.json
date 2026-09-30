@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "tag_scanned": "none",
+  "release_branch": "release-1.18-n4k",
+  "generated_at": "2026-09-30T00:00:00Z",
+  "scanners": ["manual"],
+  "findings": [
+    {
+      "id": "GHSA-59v6-2x73-wfg4",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": ">= 1.18.0, < 1.18.0-n4k.nirmata.7",
+      "fixed": "1.18.0-n4k.nirmata.7",
+      "images": ["kyverno", "background-controller", "reports-controller", "cleanup-controller"],
+      "notes": "A policy scoped to a single namespace could read the full contents of a cluster-scoped GlobalContextEntry, including data cached from namespaces the policy's tenant has no permission to read. This affected both the CEL globalContext library in namespaced policy types and the legacy globalReference context entry, neither of which was confined to the policy's namespace the way the sibling resource, http and configMap lookups already were. The fix rejects both forms in namespaced policies at admission and denies the lookup at evaluation time, leaving cluster-scoped policies unchanged. Commit a990fa489."
+    }
+  ]
+}

@@ -41,6 +41,7 @@ type CompiledPolicy interface {
 }
 
 type compiledPolicy struct {
+	namespace            string
 	failurePolicy        admissionregistrationv1.FailurePolicyType
 	matchConditions      []cel.Program
 	matchImageReferences []engine.MatchImageReference
@@ -114,7 +115,8 @@ func (c *compiledPolicy) Evaluate(ctx context.Context, ictx imagedataloader.Imag
 		data[engine.ObjectKey] = objectVal
 		data[engine.OldObjectKey] = oldObjectVal
 		data[engine.VariablesKey] = vars
-		data[engine.GlobalContextKey] = globalcontext.Context{ContextInterface: context}
+		// the activation overrides the lib's binding, so confine here too
+		data[engine.GlobalContextKey] = globalcontext.Context{ContextInterface: engine.ConfineGlobalContext(context, c.namespace)}
 		data[engine.ImageDataKey] = imagedata.Context{ContextInterface: context}
 		data[engine.ResourceKey] = resource.Context{ContextInterface: context}
 	} else {

@@ -3567,3 +3567,16 @@ func Test_Shallow_Variable_Substitution(t *testing.T) {
 	err = ValidateVariables(policy, true)
 	assert.Nil(t, err)
 }
+
+func Test_validateRuleContext_NamespacedPolicyRejectsGlobalReference(t *testing.T) {
+	rule := kyverno.Rule{
+		Context: []kyverno.ContextEntry{{
+			Name:            "gctx",
+			GlobalReference: &kyverno.GlobalContextEntryReference{Name: "entry"},
+		}},
+	}
+	err := validateRuleContext(rule, true)
+	assert.ErrorContains(t, err, "globalReference is not allowed in namespaced policies")
+
+	assert.NoError(t, validateRuleContext(rule, false))
+}

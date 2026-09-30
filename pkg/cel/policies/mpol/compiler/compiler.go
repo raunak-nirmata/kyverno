@@ -162,7 +162,7 @@ func (c *compilerImpl) newExtendedEnv(libCtx libs.Context, namespace string) (*c
 			generator.Latest(),
 		),
 		globalcontext.Lib(
-			globalcontext.Context{ContextInterface: libCtx},
+			globalcontext.Context{ContextInterface: compiler.ConfineGlobalContext(libCtx, namespace)},
 			globalcontext.Latest(),
 		),
 		resource.Lib(
