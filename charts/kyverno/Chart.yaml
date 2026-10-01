@@ -65,5 +65,5 @@ dependencies:
     condition: openreports.installCrds
   - name: kyverno-notation-aws
     version: 2.0.0-rc.2
-    repository: "oci://ghcr.io/nirmata/charts"
+    repository: "https://nirmata.github.io/kyverno-charts"
     condition: kyverno-notation-aws.install
