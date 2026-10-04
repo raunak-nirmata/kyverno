@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "tag_scanned": "v1.19.2-n4k.nirmata.1",
+  "release_branch": "release-1.19-n4k",
+  "generated_at": "2026-09-28T00:00:00Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-3f2c-hfj8-542w",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": ">= 1.11.0, < 1.19.2",
+      "fixed": "1.19.2",
+      "images": [
+        "kyverno",
+        "reports-controller"
+      ],
+      "notes": "Notary attestation statement extraction checked the compressed descriptor and layer size against the 10 MB payload limit but read the decompressed predicate into memory without a bound, so an attacker-supplied referrer artifact that compresses small and expands large could exhaust admission controller memory; fixed by reading layers through a shared helper that decompresses under a bounded decoder and caps the decompressed output at the same limit (on this branch as 87cc5f94b)."
+    },
+    {
+      "id": "GHSA-fr24-3hvf-393q",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": ">= 1.11.0, < 1.19.2",
+      "fixed": "1.19.2",
+      "images": [
+        "kyverno",
+        "reports-controller"
+      ],
+      "notes": "Notary signature blob fetching applied the same compressed-only size check and buffered the decompressed signature layer without a bound, giving the same memory-exhaustion path during image verification; fixed by the same bounded-decoder helper, which also covers the equivalent cosign bundle read, and by rejecting a signature manifest that declares no layers instead of indexing it and panicking (on this branch as 87cc5f94b)."
+    }
+  ]
+}
