@@ -71,6 +71,12 @@ type controller struct {
 
 	eventGen event.Interface
 	checker  checker.AuthChecker
+
+	// polexEnabled and exceptionNamespace mirror the runtime PolicyException gates
+	// (--enablePolicyException / --exceptionNamespace) so generated VAP/MAP resources
+	// only honor exceptions the runtime admission path would also honor.
+	polexEnabled       bool
+	exceptionNamespace string
 }
 
 func NewController(
@@ -92,6 +98,8 @@ func NewController(
 	mapbindingAlphaInformer admissionregistrationv1alpha1informers.MutatingAdmissionPolicyBindingInformer,
 	eventGen event.Interface,
 	checker checker.AuthChecker,
+	polexEnabled bool,
+	exceptionNamespace string,
 ) controllers.Controller {
 	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
 		workqueue.DefaultTypedControllerRateLimiter[any](),
@@ -111,6 +119,9 @@ func NewController(
 		queue:           queue,
 		eventGen:        eventGen,
 		checker:         checker,
+
+		polexEnabled:       polexEnabled,
+		exceptionNamespace: exceptionNamespace,
 	}
 
 	// Set up an event handler for when Kyverno policies change

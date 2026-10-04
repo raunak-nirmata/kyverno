@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "tag_scanned": "v1.18.0-n4k.nirmata.6",
+  "release_branch": "release-1.18-n4k",
+  "generated_at": "2026-09-28T00:00:00Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-qc9c-3fgf-cgq8",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "<= v1.18.0-n4k.nirmata.6",
+      "fixed": "next 1.18 n4k patch",
+      "images": [
+        "kyverno"
+      ],
+      "notes": "The admission-policy generator folded PolicyExceptions into generated ValidatingAdmissionPolicy and MutatingAdmissionPolicy resources without applying the gates runtime enforcement uses, so an exception the engine would reject still took effect in the generated native policy. The generator now applies the --enablePolicyException flag, --exceptionNamespace scoping, and policyRefs kind matching, delegating to the same helpers the CEL engines call."
+    }
+  ]
+}
