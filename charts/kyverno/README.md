@@ -2,7 +2,7 @@
 
 Kubernetes Native Policy Management
 
-![Version: 3.8.0-rc.1](https://img.shields.io/badge/Version-3.8.0--rc.1-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v1.18.0-n4k.nirmata.1-rc.1](https://img.shields.io/badge/AppVersion-v1.18.0--n4k.nirmata.1--rc.1-informational?style=flat-square)
+![Version: 3.8.4-rc.2](https://img.shields.io/badge/Version-3.8.4--rc.2-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v1.18.0-n4k.nirmata.6](https://img.shields.io/badge/AppVersion-v1.18.0--n4k.nirmata.6-informational?style=flat-square)
 
 ## About
 
@@ -310,11 +310,6 @@ The default audience is Kyverno-specific so leaked tokens are not accepted by th
 | config.licenseState.create | bool | `true` | Create the license state configmap. |
 | config.licenseState.preserve | bool | `true` | Keep the configmap on `helm uninstall`, so that reinstalling into the same namespace does not hand out a fresh trial window. Set to `false` in throwaway environments where an orphaned configmap is the bigger nuisance. |
 | config.licenseState.name | string | `nil` | The configmap name (required if `create` is `false`). |
-| license.create | bool | `false` | Create a Secret from `license.value` for the commercial Nirmata license. |
-| license.name | string | `nil` | Secret name (defaults to `<fullname>-license` when create is true). |
-| license.key | string | `"license"` | Key inside the Secret that holds the license file body. |
-| license.value | string | `nil` | Raw license file content. Required when `create` is true. |
-| license.existingSecret | string | `nil` | Name of an existing Secret that already holds the license file. |
 | config.disableAutoWebhookGeneration | object | `{"enable":false,"webhooks":["kyverno-policy-validating-webhook-cfg","kyverno-exception-validating-webhook-cfg"]}` | Disable auto webhook generation. This is useful for environments like AKS where certain webhooks may cause issues. |
 | config.disableAutoWebhookGeneration.enable | bool | `false` | Enable the disableAutoWebhookGeneration feature |
 | config.disableAutoWebhookGeneration.webhooks | list | `["kyverno-policy-validating-webhook-cfg","kyverno-exception-validating-webhook-cfg"]` | List of webhooks to disable |
@@ -384,8 +379,8 @@ The default audience is Kyverno-specific so leaked tokens are not accepted by th
 | features.globalContext.apiCallTimeout | string | `"30s"` | Timeout for HTTP API calls made by policies. A value of 0s means no timeout. |
 | features.globalContext.apiCallBlocklist | string | `nil` | Comma-separated CIDRs/hostnames that context.apiCall service calls may not reach. Overrides the built-in default blocklist (169.254.0.0/16, fe80::/10, fd00:ec2::254/128, 100.100.100.200/32, 127.0.0.0/8, ::1/128, metadata.google.internal, metadata.internal) when set. Leave unset (null) to keep the secure built-in defaults -- setting an empty string here does not disable the filter, it is simply ignored and the flag is omitted, preserving the built-in defaults. CEL http.Get/Post is gated separately by the httpBlocklist flag, whose defaults are deliberately wider. To disable the filter entirely (not recommended), set the environment variable instead, e.g. admissionController.container.extraEnvVars: [{name: FLAG_APICALL_BLOCKLIST, value: ""}] -- and repeat for the background, reports and cleanup controllers, which make apiCall requests too. |
 | features.globalContext.apiCallAllowlist | string | `nil` | Comma-separated URL prefixes (scheme+host[+path]) that context.apiCall service calls are restricted to. When set, only matching URLs are permitted. Leave unset (null) to keep the secure built-in defaults (no allowlist restriction) -- setting an empty string here is ignored and the flag is omitted. CEL http.Get/Post is gated separately by the httpAllowlist flag. |
-| features.licensing.evaluationInterval | string | `nil` | How often Nirmata license state is re-evaluated. Clamped to between `1m` and `1h`. Leave unset to use the built-in default of `15m`. Licensing itself is always enabled and cannot be turned off. In FreeTier, FreeExpired and Degraded, CREATE of a new policy at or over the licensed policy cap is refused. Core workload admission is never gated. |
-| features.licensing.licensePath | string | `nil` | Path to a commercial license file inside the admission controller. When `license.create` or `license.existingSecret` is set, defaults to the chart mount path. |
+| features.licensing.evaluationInterval | string | `nil` | How often Nirmata license state is re-evaluated. Clamped to between `1m` and `1h`. Leave unset to use the built-in default of `15m`.  Licensing itself is always enabled and cannot be turned off. In FreeTier, FreeExpired and Degraded states, CREATE of a new policy that would exceed the licensed policy cap is refused. Core workload admission (validate/mutate/generate) is never gated. Feature-tier gating is not enforced in this release. |
+| features.licensing.licensePath | string | `nil` | Path to a commercial license file inside the admission controller container. Leave unset to use the free-tier community license. When `license.create` or `license.existingSecret` is set, the chart mounts the Secret and defaults this to the mount path unless overridden here. |
 | features.licensing.warnRatio | float | `nil` | Capacity utilization fraction, in (0, 1], at which the license state enters Warning. Leave unset to use the built-in default of `0.9`. Values outside that range fall back to the default. |
 | features.logging.format | string | `"text"` | Logging format |
 | features.logging.verbosity | int | `2` | Logging verbosity |
@@ -835,7 +830,7 @@ The default audience is Kyverno-specific so leaked tokens are not accepted by th
 | webhooksCleanup.enabled | bool | `true` | Create a helm pre-delete hook to cleanup webhooks. |
 | webhooksCleanup.autoDeleteWebhooks.enabled | bool | `false` | Allow webhooks controller to delete webhooks using finalizers |
 | webhooksCleanup.image.registry | string | `"ghcr.io"` | Image registry |
-| webhooksCleanup.image.repository | string | `"kyverno/readiness-checker"` | Image repository (readiness-checker supports delete-webhooks and scale-deploy) |
+| webhooksCleanup.image.repository | string | `"nirmata/readiness-checker"` | Image repository (readiness-checker supports delete-webhooks and scale-deploy) |
 | webhooksCleanup.image.tag | string | `nil` | Image tag Defaults to `latest` if omitted |
 | webhooksCleanup.image.pullPolicy | string | `nil` | Image pull policy Defaults to image.pullPolicy if omitted |
 | webhooksCleanup.imagePullSecrets | list | `[]` | Image pull secrets |
@@ -904,6 +899,12 @@ The default audience is Kyverno-specific so leaked tokens are not accepted by th
 | apiCallToken | object | `{"audience":"kyverno-svc.kyverno.io","expirationSeconds":3600}` | Scoped token injected into outbound APICall and CEL http requests. This token carries a custom audience so that if leaked to an external service it cannot be replayed against the Kubernetes API server. |
 | apiCallToken.audience | string | `"kyverno-svc.kyverno.io"` | Audience for the projected token used in outbound requests. Set this to the audience your receiving service validates in the OIDC token's `aud` claim. The default is `kyverno-svc.kyverno.io`, which is a Kyverno-specific audience and prevents the token from being accepted by the Kubernetes API server. |
 | apiCallToken.expirationSeconds | int | `3600` | Token lifetime in seconds for the projected outbound API call token. The default is `3600` (1 hour). The kubelet requests a replacement before the token expires, so lowering this reduces token lifetime while increasing rotation frequency. |
+| license | object | `{"create":false,"existingSecret":null,"key":"license","name":null,"value":null}` | Nirmata commercial license. When create or existingSecret is set, the admission controller mounts the Secret (optional volume) and validates the license offline. Deleting the Secret does not take pods down: the evaluator falls back to the free-tier community license (FreeTier / FreeExpired). |
+| license.create | bool | `false` | Create a Secret from `license.value`. |
+| license.name | string | `nil` | Secret name (defaults to `<fullname>-license` when create is true). |
+| license.key | string | `"license"` | Key inside the Secret that holds the license file body. |
+| license.value | string | `nil` | Raw license file content. Required when `create` is true. |
+| license.existingSecret | string | `nil` | Name of an existing Secret in the release namespace that already holds the license file. Ignored when `create` is true. |
 | imagePullSecrets | object | `{}` | Image pull secrets for image verification policies, this will define the `--imagePullSecrets` argument |
 | existingImagePullSecrets | list | `[]` | Existing Image pull secrets for image verification policies, this will define the `--imagePullSecrets` argument |
 | customLabels | object | `{}` | Additional labels |
@@ -1019,6 +1020,10 @@ The default audience is Kyverno-specific so leaked tokens are not accepted by th
 | reports-server.jobConfigurations.podAnnotations | object | `{}` | Pod annotations. |
 | reports-server.jobConfigurations.nodeAffinity | object | `{}` | Node affinity constraints. |
 | reports-server.jobConfigurations.securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"privileged":false,"readOnlyRootFilesystem":true,"runAsGroup":65534,"runAsNonRoot":true,"runAsUser":65534,"seccompProfile":{"type":"RuntimeDefault"}}` | Security context for the hook containers |
+| kyverno-notation-aws.install | bool | `false` | Enable the kyverno-notation-aws subchart |
+| kyverno-notation-aws.fullnameOverride | string | `"kyverno-notation-aws"` | Keep the subchart's fullname stable regardless of release name, so its Service name (and therefore the URL customers reference from policies) does not change. |
+| kyverno-notation-aws.region | string | `"us-west-2"` | AWS region used by the notation-aws image verification service |
+| kyverno-notation-aws.license.existingSecret | string | `"kyverno-license"` | Name of the N4K license Secret to mount. This must match `kyverno.license.secretName` (see templates/config/license-helpers.tpl), which defaults to "<fullname>-license" and is release-name-scoped: it resolves to "kyverno-license" only when the release is named "kyverno" (the default) and `license.create` is left at its default. If you override the release name, or the top-level `license.name` / `license.existingSecret` values, you must update this value to match, otherwise kyverno-notation-aws mounts a Secret that does not exist (or the wrong one) and stays unlicensed. |
 
 ## TLS Configuration
 
@@ -1082,6 +1087,7 @@ Kubernetes: `>=1.25.0-0`
 |  | crds | 3.8.0 |
 |  | grafana | 3.8.0 |
 | https://kyverno.github.io/api | kyverno-api | 0.0.1-alpha.2 |
+| https://nirmata.github.io/kyverno-charts | kyverno-notation-aws | 2.0.0-rc.3 |
 | https://nirmata.github.io/kyverno-charts | reports-server | 0.2.34 |
 | https://openreports.github.io/reports-api | openreports | 0.1.0 |
 

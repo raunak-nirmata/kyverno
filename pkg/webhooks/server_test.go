@@ -182,6 +182,7 @@ func buildTestServer(t *testing.T) *httprouter.Router {
 	crbLister := &mockCRBLister{}
 
 	pHandlers := PolicyHandlers{Mutation: dummyHandler, Validation: dummyHandler}
+	lHandlers := LicenseHandlers{Validation: dummyHandler}
 	rHandlers := ResourceHandlers{
 		MutatingPolicies: dummyHandler, NamespacedMutatingPolicies: dummyHandler,
 		ValidatingPolicies: dummyHandler, NamespacedValidatingPolicies: dummyHandler,
@@ -196,7 +197,7 @@ func buildTestServer(t *testing.T) *httprouter.Router {
 	tlsProvider := func() ([]byte, []byte, error) { return []byte("cert"), []byte("key"), nil }
 
 	s := NewServer(
-		ctx, pHandlers, rHandlers, eHandlers, celHandlers, gcHandlers,
+		ctx, pHandlers, lHandlers, rHandlers, eHandlers, celHandlers, gcHandlers,
 		cfg, metricsMgr, debugOpts, tlsProvider,
 		mwcClient, vwcClient, leaseClient, runtimeMock,
 		rbLister, crbLister, discoveryMock, "localhost", 8080,
