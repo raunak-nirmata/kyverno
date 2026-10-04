@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "tag_scanned": "v1.18.0-n4k.nirmata.6",
+  "release_branch": "release-1.18-n4k",
+  "generated_at": "2026-09-28T00:00:00Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-2r43-6962-xcw5",
+      "severity": "CRITICAL",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "< v1.18.0-n4k.nirmata.7",
+      "fixed": "v1.18.0-n4k.nirmata.7",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "The image verification cache keyed a prior pass verdict on the image reference string, which could be a bare tag. Because a registry can repoint a tag, a verdict earned by one image could later be served for a different image pushed to the same tag. Fixed by refusing to store or serve any cache entry whose reference is not digest-pinned, and by resolving the digest before deriving the key."
+    },
+    {
+      "id": "GHSA-h3pm-q9ww-f439",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "< v1.18.0-n4k.nirmata.7",
+      "fixed": "v1.18.0-n4k.nirmata.7",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "The validating webhook trusted the verify-images annotation written by the mutating webhook, so a request that set the annotation directly, or replayed it on UPDATE, was admitted without verification. Fixed by having the validating handler re-verify independently; the annotation is now informational only and is no longer read as a verdict."
+    },
+    {
+      "id": "GHSA-24cc-9745-hxfc",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "< v1.18.0-n4k.nirmata.7",
+      "fixed": "v1.18.0-n4k.nirmata.7",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "Unchecked type assertions on remote attestation and OCI manifest JSON panicked on a non-string type field, bypassing image verification and crash-looping the reports controller. Fixed by reading those fields through a checked accessor that returns an error, so malformed remote data fails closed."
+    },
+    {
+      "id": "GHSA-fcfr-fr8g-qjqv",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "< v1.18.0-n4k.nirmata.7",
+      "fixed": "v1.18.0-n4k.nirmata.7",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "A cosign signing certificate with no subject alternative name caused the configured subject and subjectRegExp identity check to be skipped rather than failing, so a certificate carrying no identity satisfied a policy that pinned one. Fixed by failing closed when a subject constraint is configured and the certificate has no subject alternative name."
+    }
+  ]
+}
