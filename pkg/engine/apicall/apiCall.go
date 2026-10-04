@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
-	"path"
 	"regexp"
 
 	"github.com/go-logr/logr"
@@ -71,22 +69,32 @@ func (a *apiCall) Fetch(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("failed to substitute variables in context entry %s %s: %v", a.entry.Name, a.entry.APICall.URLPath, err)
 	}
 
-	// decode percent-encoded characters (%2e%2e -> ..) so encoded dot-segments cannot bypass the namespace clamp
-	unescapedPath, err := url.PathUnescape(call.APICall.URLPath)
-	if err != nil {
-		// invalid encoding: validate the raw path, the API server rejects it later
-		unescapedPath = call.APICall.URLPath
+	// A service: call carries no urlPath, so there is nothing to canonicalize. It
+	// keeps path.Clean("")'s value so the clamp below still rejects it for a
+	// namespaced policy, which is this branch's pinned service-call SSRF mitigation.
+	validationPath := "."
+	if call.APICall.URLPath != "" {
+		canonicalPath, cleanedPath, err := canonicalizeURLPath(call.APICall.URLPath)
+		if err != nil {
+			return nil, fmt.Errorf("invalid urlPath for context entry %s: %w", a.entry.Name, err)
+		}
+		validationPath = cleanedPath
+		// Execute the exact same canonical path that was just validated -
+		// validation and execution must never diverge on representation.
+		call.APICall.URLPath = canonicalPath
 	}
-	cleanPath := path.Clean(unescapedPath)
 
 	if a.policyNamespace != "" {
-		if matches := namespacePathRegex.FindStringSubmatch(cleanPath); len(matches) > 2 {
+		// Namespaced Policy: verify path accesses only the policy's namespace.
+		// Match the path component alone - a /namespaces/<name>/ decoy in a query
+		// value would otherwise satisfy this check.
+		if matches := namespacePathRegex.FindStringSubmatch(validationPath); len(matches) > 2 {
 			ns := matches[2]
 			if ns != a.policyNamespace {
-				return nil, fmt.Errorf("path %s refers to namespace %s, which is different from the policy namespace %s", cleanPath, ns, a.policyNamespace)
+				return nil, fmt.Errorf("path %s refers to namespace %s, which is different from the policy namespace %s", validationPath, ns, a.policyNamespace)
 			}
 		} else {
-			return nil, fmt.Errorf("path %s does not contain a namespace segment, which is required for namespaced policies", cleanPath)
+			return nil, fmt.Errorf("path %s does not contain a namespace segment, which is required for namespaced policies", validationPath)
 		}
 	}
 

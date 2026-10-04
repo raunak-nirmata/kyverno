@@ -496,6 +496,202 @@ func Test_PercentEncodedPathTraversal(t *testing.T) {
 	assert.NilError(t, err)
 }
 
+// recordingClient captures the exact path that was executed, so tests can
+// assert that the executor receives the same canonical path that namespace
+// validation checked - not the original, unvalidated URLPath.
+type recordingClient struct {
+	gotPath string
+}
+
+func (c *recordingClient) RawAbsPath(ctx context.Context, path string, method string, dataReader io.Reader) ([]byte, error) {
+	c.gotPath = path
+	return []byte("{}"), nil
+}
+
+func canonEntry(urlPath string) kyvernov1.ContextEntry {
+	return kyvernov1.ContextEntry{
+		Name: "test",
+		APICall: &kyvernov1.ContextAPICall{
+			APICall: kyvernov1.APICall{
+				URLPath: urlPath,
+				Method:  "GET",
+			},
+		},
+	}
+}
+
+// fetchCanon runs Fetch for urlPath under policyNamespace and reports the
+// error together with the path that actually reached the executor.
+func fetchCanon(t *testing.T, urlPath, policyNamespace string) (string, error) {
+	t.Helper()
+	ctx := enginecontext.NewContext(jp)
+	client := &recordingClient{}
+	call, err := New(logr.Discard(), jp, canonEntry(urlPath), ctx, client, apiConfig, policyNamespace)
+	assert.NilError(t, err)
+	_, ferr := call.Fetch(context.TODO())
+	return client.gotPath, ferr
+}
+
+// CVE-2026-100706 / CVE-2026-100707: the namespace clamp regex matches a
+// /namespaces/<name>/ segment anywhere in the string it is handed. A decoy
+// planted in a query value satisfied the clamp while the path itself reached a
+// cluster-scoped endpoint, because the API server never routes on the query.
+func Test_QueryValueNamespaceDecoyRejected(t *testing.T) {
+	for _, urlPath := range []string{
+		"/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations?x=/namespaces/default/y",
+		"/api/v1/secrets?x=/namespaces/default/y",
+		"/api/v1/secrets?x=/../../../../api/v1/namespaces/default/y",
+		"/api/v1/nodes?fieldSelector=metadata.name%3D/namespaces/default/",
+	} {
+		t.Run(urlPath, func(t *testing.T) {
+			gotPath, err := fetchCanon(t, urlPath, "default")
+			assert.Equal(t, "", gotPath, "the request must never reach the executor")
+			assert.ErrorContains(t, err, "does not contain a namespace segment")
+		})
+	}
+}
+
+// A decoy in a query value must not mask a path that targets another namespace
+// either - the clamp must report the path's real namespace.
+func Test_QueryValueDecoyDoesNotMaskForeignNamespace(t *testing.T) {
+	gotPath, err := fetchCanon(t, "/api/v1/namespaces/kube-system/secrets?x=/namespaces/default/y", "default")
+	assert.Equal(t, "", gotPath)
+	assert.ErrorContains(t, err, "refers to namespace kube-system, which is different from the policy namespace default")
+}
+
+// A fragment is meaningless to the API server - client-go's url.Parse discards
+// it - so a /namespaces/<name>/ decoy hidden behind '#' satisfied the clamp and
+// then vanished before the request was built.
+func Test_FragmentNamespaceDecoyRejected(t *testing.T) {
+	for _, urlPath := range []string{
+		"/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations#/namespaces/default/",
+		"/api/v1/secrets#/namespaces/default/",
+		"/api/v1/namespaces/default/pods#/../../kube-system/secrets",
+	} {
+		t.Run(urlPath, func(t *testing.T) {
+			gotPath, err := fetchCanon(t, urlPath, "default")
+			assert.Equal(t, "", gotPath)
+			assert.ErrorContains(t, err, "must not contain a fragment")
+		})
+	}
+}
+
+func Test_CanonicalPathReachesExecutor(t *testing.T) {
+	cases := []struct {
+		name            string
+		urlPath         string
+		policyNamespace string
+		wantExecuted    string
+	}{{
+		name:            "dot-segments and duplicate slashes are collapsed",
+		urlPath:         "/api/v1/namespaces/default//pods/./foo/../bar",
+		policyNamespace: "default",
+		wantExecuted:    "/api/v1/namespaces/default/pods/bar",
+	}, {
+		name:            "percent-encoded traversal that stays in the namespace is canonicalized",
+		urlPath:         "/api/v1/namespaces/default/pods/%2e%2e/secrets",
+		policyNamespace: "default",
+		wantExecuted:    "/api/v1/namespaces/default/secrets",
+	}, {
+		// Guards against over-correcting: labelSelector and friends are
+		// legitimate and must survive canonicalization untouched.
+		name:            "a legitimate query string survives to the wire",
+		urlPath:         "/api/v1/namespaces/default/pods?labelSelector=app%3Dweb&limit=10",
+		policyNamespace: "default",
+		wantExecuted:    "/api/v1/namespaces/default/pods?labelSelector=app%3Dweb&limit=10",
+	}, {
+		name:            "own-namespace path is allowed",
+		urlPath:         "/api/v1/namespaces/default/secrets/mysecret",
+		policyNamespace: "default",
+		wantExecuted:    "/api/v1/namespaces/default/secrets/mysecret",
+	}, {
+		// Empty policyNamespace means ClusterPolicy: no clamp applies, and that
+		// must not change - the query is carried through as written.
+		name:            "a cluster-scoped policy is unaffected by a query decoy",
+		urlPath:         "/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations?x=/namespaces/default/y",
+		policyNamespace: "",
+		wantExecuted:    "/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations?x=/namespaces/default/y",
+	}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotPath, err := fetchCanon(t, tc.urlPath, tc.policyNamespace)
+			assert.NilError(t, err)
+			assert.Equal(t, tc.wantExecuted, gotPath)
+		})
+	}
+}
+
+func Test_LiteralTraversalRejected(t *testing.T) {
+	gotPath, err := fetchCanon(t, "/api/v1/namespaces/default/../kube-system/secrets/top-secret", "default")
+	assert.Equal(t, "", gotPath)
+	assert.ErrorContains(t, err, "refers to namespace kube-system, which is different from the policy namespace default")
+}
+
+func Test_AbsoluteURLPathRejected(t *testing.T) {
+	for _, urlPath := range []string{
+		"https://evil.example.com/api/v1/namespaces/default/secrets",
+		// Protocol-relative: no scheme, so this is caught by the Host check
+		// rather than by IsAbs.
+		"//evil.example.com/api/v1/namespaces/default/secrets",
+		"http://user:pw@evil.example.com/api/v1/namespaces/default/secrets",
+	} {
+		t.Run(urlPath, func(t *testing.T) {
+			gotPath, err := fetchCanon(t, urlPath, "default")
+			assert.Equal(t, "", gotPath)
+			assert.ErrorContains(t, err, "must be a relative Kubernetes API path")
+		})
+	}
+}
+
+// Fetch short-circuits on an empty URLPath (a service: call), so the empty and
+// relative cases are exercised against the helper directly.
+func Test_canonicalizeURLPath_rejects(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		wantErr string
+	}{
+		{name: "empty", raw: "", wantErr: "urlPath must not be empty"},
+		{name: "relative", raw: "api/v1/namespaces/default/pods", wantErr: "must be an absolute path"},
+		{name: "scheme only", raw: "file:///etc/passwd", wantErr: "must be a relative Kubernetes API path"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			canonical, validation, err := canonicalizeURLPath(tc.raw)
+			assert.Equal(t, "", canonical)
+			assert.Equal(t, "", validation)
+			assert.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
+
+func Test_canonicalizeURLPath_splitsPathAndQuery(t *testing.T) {
+	canonical, validation, err := canonicalizeURLPath("/api/v1/secrets?x=/namespaces/default/y")
+	assert.NilError(t, err)
+	assert.Equal(t, "/api/v1/secrets?x=/namespaces/default/y", canonical)
+	// The decoy must not appear in the value handed to the namespace clamp.
+	assert.Equal(t, "/api/v1/secrets", validation)
+}
+
+// A service: call has no urlPath, so the clamp has nothing to match. A namespaced
+// policy must still be refused - this branch's service-call SSRF mitigation. Pinned
+// here because the clamp is what enforces it, not the SSRF filter.
+func Test_NamespacedPolicyCannotMakeServiceCalls(t *testing.T) {
+	entry := kyvernov1.ContextEntry{
+		Name: "test",
+		APICall: &kyvernov1.ContextAPICall{
+			APICall: kyvernov1.APICall{
+				Method:  "GET",
+				Service: &kyvernov1.ServiceCall{URL: "https://example.invalid/x"},
+			},
+		},
+	}
+	call, err := New(logr.Discard(), jp, entry, enginecontext.NewContext(jp), nil, apiConfig, "default")
+	assert.NilError(t, err)
+	_, err = call.Fetch(context.TODO())
+	assert.ErrorContains(t, err, "does not contain a namespace segment")
+}
+
 func Test_APICallConfiguration_GetTimeout(t *testing.T) {
 	// Default timeout via constructor
 	config := NewAPICallConfiguration(1000, 30*time.Second)
