@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/kyverno/kyverno/pkg/config"
@@ -1824,4 +1825,53 @@ func Test_CustomFunctions_ValidationErrors(t *testing.T) {
 		_, err := jpMd5([]any{123})
 		assert.ErrorContains(t, err, "JMESPath function 'md5': argument #1 is not of type string")
 	})
+}
+
+func Test_jpRandom_NonStringPatternDoesNotPanic(t *testing.T) {
+	_, err := jpRandom([]any{123})
+	assert.ErrorContains(t, err, "String")
+}
+
+func Test_jpPatternMatch_RejectsOversizedPattern(t *testing.T) {
+	overLimit := strings.Repeat("a", 1025)
+	_, err := jpPatternMatch([]any{overLimit, "value"})
+	assert.ErrorContains(t, err, "exceeds the maximum allowed length")
+
+	atLimit := strings.Repeat("a", 1024)
+	result, err := jpPatternMatch([]any{atLimit, "value"})
+	assert.NilError(t, err)
+	assert.Equal(t, result, false)
+}
+
+func Test_jpRegexMatch_RejectsOversizedPattern(t *testing.T) {
+	overLimit := strings.Repeat("a", 1025)
+	_, err := jpRegexMatch([]any{overLimit, "value"})
+	assert.ErrorContains(t, err, "exceeds the maximum allowed length")
+
+	atLimit := strings.Repeat("a", 1024)
+	result, err := jpRegexMatch([]any{atLimit, "value"})
+	assert.NilError(t, err)
+	assert.Equal(t, result, false)
+}
+
+func Test_jpRegexReplaceAll_RejectsOversizedPattern(t *testing.T) {
+	overLimit := strings.Repeat("a", 1025)
+	_, err := jpRegexReplaceAll([]any{overLimit, "value", "repl"})
+	assert.ErrorContains(t, err, "exceeds the maximum allowed length")
+
+	atLimit := strings.Repeat("a", 1024)
+	result, err := jpRegexReplaceAll([]any{atLimit, "value", "repl"})
+	assert.NilError(t, err)
+	assert.Equal(t, result, "value")
+}
+
+func Test_jpRegexReplaceAllLiteral_RejectsOversizedPattern(t *testing.T) {
+	overLimit := strings.Repeat("a", 1025)
+	_, err := jpRegexReplaceAllLiteral([]any{overLimit, "value", "repl"})
+	assert.ErrorContains(t, err, "exceeds the maximum allowed length")
+
+	atLimit := strings.Repeat("a", 1024)
+	result, err := jpRegexReplaceAllLiteral([]any{atLimit, "value", "repl"})
+	assert.NilError(t, err)
+	assert.Equal(t, result, "value")
 }

@@ -1299,3 +1299,283 @@ func Test_ReplaceAllVars(t *testing.T) {
 	result = ReplaceAllVars("{{ foo {{foo}} }}", func(s string) string { return "test" })
 	assert.Equal(t, result, "{{ foo test }}")
 }
+
+func Test_SubstituteDoesNotRescanSubstitutedValue(t *testing.T) {
+	ctx := context.NewContext(jp)
+	data := map[string]interface{}{
+		"badValue": "prefix {{ badValue }} suffix",
+	}
+	assert.NilError(t, context.AddJSONObject(ctx, data))
+
+	patternRaw := []byte(`"prefix {{ badValue }} suffix"`)
+	action := substituteVariablesIfAny(logr.Discard(), ctx, DefaultVariableResolver)
+	results, err := action(&ju.ActionData{
+		Document: nil,
+		Element:  string(patternRaw),
+		Path:     "/",
+	})
+
+	assert.NilError(t, err)
+	assert.Equal(t, results.(string), `"prefix prefix {{ badValue }} suffix suffix"`)
+}
+
+func Test_SubstituteTerminatesWhenValueReintroducesTemplate(t *testing.T) {
+	ctx := context.NewContext(jp)
+	data := map[string]interface{}{
+		"msg": "X{{ msg }}",
+	}
+	assert.NilError(t, context.AddJSONObject(ctx, data))
+
+	action := substituteVariablesIfAny(logr.Discard(), ctx, DefaultVariableResolver)
+	results, err := action(&ju.ActionData{
+		Document: nil,
+		Element:  "A{{ msg }}",
+		Path:     "/",
+	})
+
+	assert.NilError(t, err)
+	assert.Equal(t, results.(string), "AX{{ msg }}")
+}
+
+func Test_SubstitutedValueTailIsNotRescanned(t *testing.T) {
+	ctx := context.NewContext(jp)
+	data := map[string]interface{}{
+		"obj": map[string]interface{}{
+			"k": "{{ x }}",
+		},
+		"x": "RESOLVED",
+	}
+	assert.NilError(t, context.AddJSONObject(ctx, data))
+
+	action := substituteVariablesIfAny(logr.Discard(), ctx, DefaultVariableResolver)
+	results, err := action(&ju.ActionData{
+		Document: nil,
+		Element:  "{{ obj }}Z",
+		Path:     "/",
+	})
+
+	assert.NilError(t, err)
+	assert.Equal(t, results.(string), `{"k":"{{ x }}"}Z`)
+}
+
+func Test_AdjacentVariableAfterLongSubstitutionStillResolves(t *testing.T) {
+	ctx := context.NewContext(jp)
+	longValue := strings.Repeat("x", 200)
+	data := map[string]interface{}{
+		"a": longValue,
+		"b": "resolved_b",
+	}
+	assert.NilError(t, context.AddJSONObject(ctx, data))
+
+	action := substituteVariablesIfAny(logr.Discard(), ctx, DefaultVariableResolver)
+	results, err := action(&ju.ActionData{
+		Document: nil,
+		Element:  "{{ a }}-{{ b }}",
+		Path:     "/",
+	})
+
+	assert.NilError(t, err)
+	assert.Equal(t, results.(string), longValue+"-resolved_b")
+}
+
+func Test_DuplicateTokensBothResolve(t *testing.T) {
+	ctx := context.NewContext(jp)
+	data := map[string]interface{}{
+		"x": "dup",
+	}
+	assert.NilError(t, context.AddJSONObject(ctx, data))
+
+	action := substituteVariablesIfAny(logr.Discard(), ctx, DefaultVariableResolver)
+	results, err := action(&ju.ActionData{
+		Document: nil,
+		Element:  "{{ x }} and {{ x }}",
+		Path:     "/",
+	})
+
+	assert.NilError(t, err)
+	assert.Equal(t, results.(string), "dup and dup")
+}
+
+func Test_NestedSubstitutionCountEqualsBraceCountDoesNotError(t *testing.T) {
+	ctx := context.NewContext(jp)
+	data := map[string]interface{}{
+		"inner": "b",
+		"meta": map[string]interface{}{
+			"b": "resolved_meta_b",
+		},
+	}
+	assert.NilError(t, context.AddJSONObject(ctx, data))
+
+	patternRaw := []byte(`"{{ meta.{{ inner }} }}"`)
+	action := substituteVariablesIfAny(logr.Discard(), ctx, DefaultVariableResolver)
+	results, err := action(&ju.ActionData{
+		Document: nil,
+		Element:  string(patternRaw),
+		Path:     "/",
+	})
+
+	assert.NilError(t, err)
+	assert.Equal(t, results.(string), `"resolved_meta_b"`)
+}
+
+func Test_AliasChainResolvesThroughHops(t *testing.T) {
+	ctx := context.NewContext(jp)
+	data := map[string]interface{}{
+		"x": "{{y}}",
+		"y": "{{z}}",
+		"z": "final",
+	}
+	assert.NilError(t, context.AddJSONObject(ctx, data))
+
+	action := substituteVariablesIfAny(logr.Discard(), ctx, DefaultVariableResolver)
+	results, err := action(&ju.ActionData{
+		Document: nil,
+		Element:  "A{{ x }}B",
+		Path:     "/",
+	})
+
+	assert.NilError(t, err)
+	assert.Equal(t, results.(string), "AfinalB")
+}
+
+func Test_SelfReferentialAliasReturnsError(t *testing.T) {
+	ctx := context.NewContext(jp)
+	data := map[string]interface{}{
+		"x": "{{x}}",
+	}
+	assert.NilError(t, context.AddJSONObject(ctx, data))
+
+	action := substituteVariablesIfAny(logr.Discard(), ctx, DefaultVariableResolver)
+	_, err := action(&ju.ActionData{
+		Document: nil,
+		Element:  "A{{ x }}B",
+		Path:     "/",
+	})
+
+	assert.ErrorContains(t, err, "cyclic")
+}
+
+func Test_AliasCycleReturnsError(t *testing.T) {
+	ctx := context.NewContext(jp)
+	data := map[string]interface{}{
+		"x": "{{y}}",
+		"y": "{{x}}",
+	}
+	assert.NilError(t, context.AddJSONObject(ctx, data))
+
+	action := substituteVariablesIfAny(logr.Discard(), ctx, DefaultVariableResolver)
+	_, err := action(&ju.ActionData{
+		Document: nil,
+		Element:  "A{{ x }}B",
+		Path:     "/",
+	})
+
+	assert.ErrorContains(t, err, "cyclic")
+}
+
+func Test_EmbeddedTokenInResolvedValueStaysLiteral(t *testing.T) {
+	ctx := context.NewContext(jp)
+	data := map[string]interface{}{
+		"outer": "A{{ msg }}B",
+		"msg":   "oops",
+	}
+	assert.NilError(t, context.AddJSONObject(ctx, data))
+
+	action := substituteVariablesIfAny(logr.Discard(), ctx, DefaultVariableResolver)
+	results, err := action(&ju.ActionData{
+		Document: nil,
+		Element:  "X{{ outer }}Y",
+		Path:     "/",
+	})
+
+	assert.NilError(t, err)
+	assert.Equal(t, results.(string), "XA{{ msg }}BY")
+}
+
+func Test_MultiTokenResolvedValueStaysLiteral(t *testing.T) {
+	ctx := context.NewContext(jp)
+	big := strings.Repeat("{{tok}} ", 50)
+	data := map[string]interface{}{
+		"big": big,
+	}
+	assert.NilError(t, context.AddJSONObject(ctx, data))
+
+	action := substituteVariablesIfAny(logr.Discard(), ctx, DefaultVariableResolver)
+	results, err := action(&ju.ActionData{
+		Document: nil,
+		Element:  "prefix {{ big }} suffix",
+		Path:     "/",
+	})
+
+	assert.NilError(t, err)
+	assert.Equal(t, results.(string), "prefix "+big+" suffix")
+}
+
+func Test_WholeLeafAliasReturnsRawValue(t *testing.T) {
+	ctx := context.NewContext(jp)
+	data := map[string]interface{}{
+		"variablesNested": "{{foo2}}",
+		"foo2":            "bar2",
+	}
+	assert.NilError(t, context.AddJSONObject(ctx, data))
+
+	action := substituteVariablesIfAny(logr.Discard(), ctx, DefaultVariableResolver)
+	results, err := action(&ju.ActionData{
+		Document: nil,
+		Element:  "{{variablesNested}}",
+		Path:     "/",
+	})
+
+	assert.NilError(t, err)
+	assert.Equal(t, results.(string), "{{foo2}}")
+}
+
+func Test_SubstituteShallowNonStringValueEscapesEmbeddedBraces(t *testing.T) {
+	ctx := context.NewContext(jp)
+	data := map[string]interface{}{
+		"obj": map[string]interface{}{
+			"k": "{{ x }}",
+		},
+		"x": "should-not-resolve",
+	}
+	assert.NilError(t, context.AddJSONObject(ctx, data))
+
+	action := substituteVariablesIfAny(logr.Discard(), ctx, DefaultVariableResolver)
+	results, err := action(&ju.ActionData{
+		Document: nil,
+		Element:  "prefix {{- obj }} suffix",
+		Path:     "/",
+	})
+
+	assert.NilError(t, err)
+	assert.Equal(t, results.(string), `prefix {"k":"{{ x }}"} suffix`)
+}
+
+// Test_AcyclicAliasChainHitsHardSubstitutionCap pins the hard backstop
+// (independent of budget and the visited cycle-detection set): a long,
+// strictly acyclic alias chain -- each hop introduces a brand new name, so
+// the visited set never repeats and budget keeps replenishing by one per
+// alias hop -- must still stop once it crosses the absolute cap, rather
+// than running for as many substitutions as there are distinct addressable
+// names in context.
+func Test_AcyclicAliasChainHitsHardSubstitutionCap(t *testing.T) {
+	ctx := context.NewContext(jp)
+
+	chainLength := maxTotalSubstitutions + 1
+	data := make(map[string]interface{}, chainLength+1)
+	for i := 0; i < chainLength; i++ {
+		data[fmt.Sprintf("v%d", i)] = fmt.Sprintf("{{v%d}}", i+1)
+	}
+	data[fmt.Sprintf("v%d", chainLength)] = "terminal"
+
+	assert.NilError(t, context.AddJSONObject(ctx, data))
+
+	action := substituteVariablesIfAny(logr.Discard(), ctx, DefaultVariableResolver)
+	_, err := action(&ju.ActionData{
+		Document: nil,
+		Element:  "A{{ v0 }}B",
+		Path:     "/",
+	})
+
+	assert.ErrorContains(t, err, "exceeded the hard limit on total variable substitutions")
+}

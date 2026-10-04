@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/go-logr/logr"
-	"github.com/kyverno/kyverno/ext/wildcard"
 	"github.com/kyverno/kyverno/pkg/engine/context"
 )
 
@@ -33,11 +32,7 @@ func (in InHandler) Evaluate(key, value interface{}) bool {
 	case int, int32, int64, float32, float64, bool:
 		return in.validateValueWithStringPattern(fmt.Sprint(typedKey), value)
 	case []interface{}:
-		var stringSlice []string
-		for _, v := range typedKey {
-			stringSlice = append(stringSlice, v.(string))
-		}
-		return in.validateValueWithStringSetPattern(stringSlice, value)
+		return in.validateValueWithElementSetPattern(toElements(typedKey), value)
 	default:
 		in.log.V(2).Info("Unsupported type", "value", typedKey, "type", fmt.Sprintf("%T", typedKey))
 		return false
@@ -58,16 +53,18 @@ func (in InHandler) validateValueWithStringPattern(key string, value interface{}
 // The value can be a string, an array of strings, or a JSON format
 // array of strings (e.g. ["val1", "val2", "val3"].
 func keyExistsInArray(key string, value interface{}, log logr.Logger) (invalidType bool, keyExists bool) {
+	keyElement := toElement(key)
+
 	switch valuesAvailable := value.(type) {
 	case []interface{}:
 		for _, val := range valuesAvailable {
-			if wildcard.Match(fmt.Sprint(val), key) || wildcard.Match(key, fmt.Sprint(val)) {
+			if wildcardElements(toElement(val), keyElement) {
 				return false, true
 			}
 		}
 
 	case string:
-		if wildcard.Match(valuesAvailable, key) {
+		if wildcardElementDirectional(toElement(valuesAvailable), keyElement) {
 			return false, true
 		}
 
@@ -84,14 +81,22 @@ func keyExistsInArray(key string, value interface{}, log logr.Logger) (invalidTy
 		}
 
 	default:
-		invalidType = true
-		return
+		// A bare value that is neither an array nor a string is treated
+		// as a one-element set through the same primitive that already
+		// coerces array elements: a comparable scalar (int, float, bool)
+		// compares like any array element would, and an opaque value
+		// (map, nil, ...) simply never matches -- no separate error path.
+		// Directional, matching the scalar-value semantics above: value
+		// is the pattern, key is the concrete string.
+		if wildcardElementDirectional(toElement(valuesAvailable), keyElement) {
+			return false, true
+		}
 	}
 
 	return false, false
 }
 
-func (in InHandler) validateValueWithStringSetPattern(key []string, value interface{}) (keyExists bool) {
+func (in InHandler) validateValueWithElementSetPattern(key []element, value interface{}) (keyExists bool) {
 	invalidType, isIn := setExistsInArray(key, value, in.log, false)
 	if invalidType {
 		in.log.V(2).Info("expected type []string", "value", value, "type", fmt.Sprintf("%T", value))
@@ -105,54 +110,61 @@ func (in InHandler) validateValueWithStringSetPattern(key []string, value interf
 // The value can be a string, an array of strings, or a JSON format
 // array of strings (e.g. ["val1", "val2", "val3"].
 // notIn argument if set to true will check for NotIn
-func setExistsInArray(key []string, value interface{}, log logr.Logger, notIn bool) (invalidType bool, keyExists bool) {
+func setExistsInArray(key []element, value interface{}, log logr.Logger, notIn bool) (invalidType bool, keyExists bool) {
 	switch valuesAvailable := value.(type) {
 	case []interface{}:
-		var valueSlice []string
-		for _, val := range valuesAvailable {
-			v, ok := val.(string)
-			if !ok {
-				return true, false
-			}
-			valueSlice = append(valueSlice, v)
-		}
+		valueElements := toElements(valuesAvailable)
 		if notIn {
-			return false, isNotIn(key, valueSlice)
+			return false, isNotIn(key, valueElements)
 		}
-		return false, isIn(key, valueSlice)
+		return false, isIn(key, valueElements)
 
 	case string:
-
-		if len(key) == 1 && key[0] == valuesAvailable {
+		if len(key) == 1 && equalElements(key[0], toElement(valuesAvailable)) {
+			if notIn {
+				return false, false
+			}
 			return false, true
 		}
 
 		var arr []string
-		if err := json.Unmarshal([]byte(valuesAvailable), &arr); err != nil {
-			log.Error(err, "failed to unmarshal value to JSON string array", "key", key, "value", value)
-			return true, false
-		}
-		if notIn {
-			return false, isNotIn(key, arr)
+		if json.Valid([]byte(valuesAvailable)) {
+			if err := json.Unmarshal([]byte(valuesAvailable), &arr); err != nil {
+				log.Error(err, "failed to unmarshal value to JSON string array", "key", key, "value", value)
+				return true, false
+			}
+		} else {
+			arr = append(arr, valuesAvailable)
 		}
 
-		return false, isIn(key, arr)
+		valueElements := elementsFromStrings(arr)
+		if notIn {
+			return false, isNotIn(key, valueElements)
+		}
+
+		return false, isIn(key, valueElements)
 
 	default:
-		return true, false
+		// Same rationale as keyExistsInArray's default case: a bare value
+		// is a one-element set through the shared primitive.
+		valueElements := []element{toElement(value)}
+		if notIn {
+			return false, isNotIn(key, valueElements)
+		}
+		return false, isIn(key, valueElements)
 	}
 }
 
-// isIn checks if all values in S1 are in S2
-func isIn(key []string, value []string) bool {
-	set := make(map[string]bool)
-
-	for _, val := range value {
-		set[val] = true
-	}
-
-	for _, val := range key {
-		_, found := set[val]
+// isIn checks if all values in S1 are in S2 under exact equality
+func isIn(key []element, value []element) bool {
+	for _, k := range key {
+		found := false
+		for _, v := range value {
+			if equalElements(k, v) {
+				found = true
+				break
+			}
+		}
 		if !found {
 			return false
 		}
@@ -161,16 +173,16 @@ func isIn(key []string, value []string) bool {
 	return true
 }
 
-// isNotIn checks if any of the values in S1 is not in S2
-func isNotIn(key []string, value []string) bool {
-	set := make(map[string]bool)
-
-	for _, val := range value {
-		set[val] = true
-	}
-
-	for _, val := range key {
-		_, found := set[val]
+// isNotIn checks if any of the values in S1 is not in S2 under exact equality
+func isNotIn(key []element, value []element) bool {
+	for _, k := range key {
+		found := false
+		for _, v := range value {
+			if equalElements(k, v) {
+				found = true
+				break
+			}
+		}
 		if !found {
 			return true
 		}
