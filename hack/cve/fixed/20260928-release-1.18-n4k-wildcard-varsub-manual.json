@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "tag_scanned": "v1.18.0-n4k.nirmata.6",
+  "release_branch": "release-1.18-n4k",
+  "generated_at": "2026-09-28T00:00:00Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-8mrj-27wr-599g",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "< v1.18.0-n4k.nirmata.7",
+      "fixed": "v1.18.0-n4k.nirmata.7",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "The wildcard glob matcher used a recursive algorithm whose running time could grow exponentially with pattern length, so a crafted policy or resource string could stall policy evaluation. Fixed by replacing it with a linear two-pointer matcher bounded by a per-call work budget, plus length caps on wildcard fields at policy admission."
+    },
+    {
+      "id": "GHSA-338x-hgrv-626h",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "< v1.18.0-n4k.nirmata.7",
+      "fixed": "v1.18.0-n4k.nirmata.7",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "Variable substitution re-scanned already-substituted text, so nested or self-referential values could drive unbounded re-scanning. Fixed by bounding substitution to the author's own template spans, with alias-hop and total-substitution limits."
+    },
+    {
+      "id": "GHSA-x4xq-p8g4-6fwg",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "< v1.18.0-n4k.nirmata.7",
+      "fixed": "v1.18.0-n4k.nirmata.7",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "An unchecked type assertion to string on a substituted or admission-supplied value could panic the engine or the policy-validation webhook. Fixed by guarding those assertions and degrading to an explicit error or a stringified fallback."
+    },
+    {
+      "id": "GHSA-r2p2-3892-5jjf",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "< v1.18.0-n4k.nirmata.7",
+      "fixed": "v1.18.0-n4k.nirmata.7",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "An unchecked type assertion in the In and NotIn operators could panic on a non-string key element. Fixed by routing In-family comparison through a shared element primitive that handles non-string elements safely."
+    }
+  ]
+}

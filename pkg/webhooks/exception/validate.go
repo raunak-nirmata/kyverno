@@ -29,5 +29,11 @@ func (h *exceptionHandlers) Validate(ctx context.Context, logger logr.Logger, re
 	}
 	warnings := validation.ValidateNamespace(ctx, logger, polex.GetNamespace(), h.validationOptions)
 	errs := polex.Validate()
-	return admissionutils.Response(request.UID, errs.ToAggregate(), warnings...)
+	aggregateErr := errs.ToAggregate()
+	if aggregateErr == nil {
+		if err := validation.ValidateGlobLengths(polex); err != nil {
+			return admissionutils.Response(request.UID, err, warnings...)
+		}
+	}
+	return admissionutils.Response(request.UID, aggregateErr, warnings...)
 }
