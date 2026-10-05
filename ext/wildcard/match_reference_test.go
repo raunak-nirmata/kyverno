@@ -1,6 +1,7 @@
 package wildcard
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -86,29 +87,30 @@ func TestMatchEqualsReferenceMultibyte(t *testing.T) {
 	}
 }
 
-// TestMatchTerminatesOnPathologicalInput runs an input shape that was
-// exponential in the previous implementation and asserts the correct
-// boolean result. The guard here is completion under the default go test
-// timeout, not a wall-clock assertion (those flake); with the O(n*m)
-// matcher this returns in microseconds.
+// TestMatchTerminatesOnPathologicalInput feeds the input shape that was
+// exponential in the previous recursive implementation -- many "a*" segments
+// against a long run of "a", which share a matching prefix and so force the
+// old matcher to fork at every segment instead of failing fast on the first
+// rune. It uses 24 segments over 60 runes, the scale at which the old matcher
+// took seconds; the former 12/30 shape completed in well under a second even
+// unfixed, so it could not tell fixed from vulnerable.
 //
-// The pattern and name share a matching prefix ("a*" repeated against
-// runs of "a"), which is what forces the previous implementation into its
-// exponential branching: a mismatch on the very first rune would return
-// immediately without ever forking.
+// It asserts the result is correct AND that the work stays within the O(n*m)
+// envelope, using the deterministic step counter rather than a wall clock
+// (time assertions flake). Any future change reintroducing superlinear
+// backtracking trips the step bound. A test in this already-fixed tree cannot
+// fail on a revert that deletes matchWithSteps; what it buys is a standing
+// guard against superlinear work being reintroduced.
 func TestMatchTerminatesOnPathologicalInput(t *testing.T) {
-	pattern := ""
-	for i := 0; i < 12; i++ {
-		pattern += "a*"
-	}
-	pattern += "b"
-	name := ""
-	for i := 0; i < 30; i++ {
-		name += "a"
-	}
+	pattern := strings.Repeat("a*", 24) + "b"
+	name := strings.Repeat("a", 60)
 
-	if got := Match(pattern, name); got != false {
-		t.Fatalf("Match(%q, %q) = %v, want false", pattern, name, got)
+	matched, steps := matchWithSteps(pattern, name)
+	if matched {
+		t.Fatalf("Match(%q, %q) = true, want false", pattern, name)
+	}
+	if envelope := len(pattern) * len(name); steps > envelope {
+		t.Fatalf("matchWithSteps(%q, %q) used %d steps, exceeds O(n*m) envelope %d -- superlinear work reintroduced", pattern, name, steps, envelope)
 	}
 }
 

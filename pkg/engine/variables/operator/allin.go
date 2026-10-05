@@ -86,12 +86,17 @@ func allKeyExistsInArray(key string, value interface{}, log logr.Logger) (invali
 		}
 
 	default:
-		// A bare value that is neither an array nor a string is treated
-		// as a one-element set through the same primitive that already
-		// coerces array elements. Directional, matching the scalar-value
-		// semantics above: value is the pattern, key is the concrete
-		// string.
-		if wildcardElementDirectional(toElement(valuesAvailable), keyElement) {
+		// A bare comparable scalar is a one-element set; an opaque value
+		// (null, map, nested object) is not comparable, so fail safe to an
+		// invalid type (In/*NotIn both false) rather than firing a deny on
+		// absent or non-scalar data (#1039).
+		valueElement := toElement(valuesAvailable)
+		if !valueElement.comparable {
+			return true, false
+		}
+		// Directional, matching the scalar-value semantics above: value
+		// is the pattern, key is the concrete string.
+		if wildcardElementDirectional(valueElement, keyElement) {
 			return false, true
 		}
 	}
@@ -172,10 +177,14 @@ func allSetExistsInArray(key []element, value interface{}, log logr.Logger, allN
 		return false, isAllIn(key, valueElements)
 
 	default:
-		// Same rationale as allKeyExistsInArray's default case: a bare
-		// scalar or opaque value is a one-element set through the shared
-		// primitive.
-		valueElements := []element{toElement(value)}
+		// Same rationale as allKeyExistsInArray's default case. An opaque
+		// value (null, map, nested object) is not comparable, so report an
+		// invalid type and fail safe to false (#1039).
+		valueElement := toElement(value)
+		if !valueElement.comparable {
+			return true, false
+		}
+		valueElements := []element{valueElement}
 		if allNotIn {
 			return false, isAllNotIn(key, valueElements)
 		}

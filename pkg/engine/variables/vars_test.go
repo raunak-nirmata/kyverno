@@ -1579,3 +1579,41 @@ func Test_AcyclicAliasChainHitsHardSubstitutionCap(t *testing.T) {
 
 	assert.ErrorContains(t, err, "exceeded the hard limit on total variable substitutions")
 }
+
+// Test_SubstitutionOutputSizeIsBoundedPerLeaf pins the output-size cap: a
+// single substitution whose resolved value, spliced into surrounding text,
+// exceeds maxSubstitutedOutputBytes is rejected. The count cap alone does not
+// catch this -- it is one substitution.
+func Test_SubstitutionOutputSizeIsBoundedPerLeaf(t *testing.T) {
+	ctx := context.NewContext(jp)
+	big := strings.Repeat("a", maxSubstitutedOutputBytes+1)
+	assert.NilError(t, context.AddJSONObject(ctx, map[string]interface{}{"big": big}))
+
+	action := substituteVariablesIfAny(logr.Discard(), ctx, DefaultVariableResolver)
+	_, err := action(&ju.ActionData{
+		Document: nil,
+		Element:  "A{{ big }}B",
+		Path:     "/",
+	})
+
+	assert.ErrorContains(t, err, "exceeded the maximum substituted output size")
+}
+
+// Test_SubstitutionOutputSizeIsBoundedPerDocument pins that the output cap is
+// per-document, not per-leaf: many leaves each under the cap cannot
+// collectively expand the document past it.
+func Test_SubstitutionOutputSizeIsBoundedPerDocument(t *testing.T) {
+	ctx := context.NewContext(jp)
+	chunk := strings.Repeat("a", 1<<20) // 1 MiB, well under the per-leaf cap
+	assert.NilError(t, context.AddJSONObject(ctx, map[string]interface{}{"c": chunk}))
+
+	// 12 leaves, each embedding a 1 MiB substitution: ~12 MiB total output,
+	// over the 10 MiB per-document cap though no single leaf exceeds it.
+	doc := make(map[string]interface{}, 12)
+	for i := 0; i < 12; i++ {
+		doc[fmt.Sprintf("f%d", i)] = "x{{ c }}y"
+	}
+
+	_, err := SubstituteAll(logr.Discard(), ctx, doc)
+	assert.ErrorContains(t, err, "exceeded the maximum substituted output size")
+}
