@@ -2,7 +2,7 @@
 
 Kubernetes Native Policy Management
 
-![Version: 3.8.4-rc.2](https://img.shields.io/badge/Version-3.8.4--rc.2-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v1.18.0-n4k.nirmata.6](https://img.shields.io/badge/AppVersion-v1.18.0--n4k.nirmata.6-informational?style=flat-square)
+![Version: 3.8.4-rc.3](https://img.shields.io/badge/Version-3.8.4--rc.3-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v1.18.0-n4k.nirmata.6](https://img.shields.io/badge/AppVersion-v1.18.0--n4k.nirmata.6-informational?style=flat-square)
 
 ## About
 
@@ -1087,7 +1087,7 @@ Kubernetes: `>=1.25.0-0`
 |  | crds | 3.8.0 |
 |  | grafana | 3.8.0 |
 | https://kyverno.github.io/api | kyverno-api | 0.0.1-alpha.2 |
-| https://nirmata.github.io/kyverno-charts | kyverno-notation-aws | 2.0.0-rc.3 |
+| https://nirmata.github.io/kyverno-charts | kyverno-notation-aws | 2.0.0-rc.4 |
 | https://nirmata.github.io/kyverno-charts | reports-server | 0.2.34 |
 | https://openreports.github.io/reports-api | openreports | 0.1.0 |
 
