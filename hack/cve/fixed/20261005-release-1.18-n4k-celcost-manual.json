@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "tag_scanned": "v1.18.0-n4k.nirmata.6",
+  "release_branch": "release-1.18-n4k",
+  "generated_at": "2026-10-05T00:00:00Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-m8p2-qqmx-j53x",
+      "severity": "MEDIUM",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": ">= 1.18.0, < v1.18.0-n4k.nirmata.7",
+      "fixed": "v1.18.0-n4k.nirmata.7",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "CEL policy expressions were compiled without an effective cost limit, so the work one expression could do was unbounded and a policy author could exhaust a shared controller. Enabling cel-go's cost limit alone does not help, because cel-go prices O(n) operations by resolved overload ID and Kyverno declares its resource variables as dyn, so every such call is billed a flat 1 unit. Fixed by pricing calls by function name, refusing operations whose predicted output exceeds a size cap before they run, and metering the total cost of one request, all delivered as environment-level program options so every policy family and the legacy kyverno.io/v1 CEL path inherit them."
+    }
+  ]
+}

@@ -10,9 +10,9 @@ import (
 	policiesv1beta1 "github.com/kyverno/api/api/policies.kyverno.io/v1beta1"
 	"github.com/kyverno/kyverno/pkg/cel/compiler"
 	"github.com/kyverno/kyverno/pkg/cel/libs"
+	"github.com/kyverno/kyverno/pkg/cel/libs/gzip"
 	"github.com/kyverno/sdk/cel/libs/generator"
 	"github.com/kyverno/sdk/cel/libs/globalcontext"
-	"github.com/kyverno/sdk/cel/libs/gzip"
 	"github.com/kyverno/sdk/cel/libs/hash"
 	"github.com/kyverno/sdk/cel/libs/http"
 	"github.com/kyverno/sdk/cel/libs/image"
@@ -124,7 +124,7 @@ func (c *compilerImpl) createBaseGpolEnv(libsctx libs.Context, namespace string)
 			transform.Latest(),
 		),
 		gzip.Lib(
-			gzip.Latest(),
+			gzip.Latest(), 0,
 		),
 		http.Lib(
 			http.Context{ContextInterface: compiler.NewLazyCELHTTPContext(namespace)},
@@ -134,7 +134,9 @@ func (c *compilerImpl) createBaseGpolEnv(libsctx libs.Context, namespace string)
 
 	// the custom types have to be registered after the decl options have been registered, because these are what allow
 	// go struct type resolution
-	extendedBase, err := base.Extend(
+	// compiler.BaseEnvSet, not base.Extend: registers CostLib last, in this one Extend
+	// call (see pkg/cel/compiler/env.go).
+	extendedBase, err := compiler.BaseEnvSet(gpolCompilerVersion,
 		environment.VersionedOptions{
 			IntroducedVersion: gpolCompilerVersion,
 			EnvOptions:        baseOpts,

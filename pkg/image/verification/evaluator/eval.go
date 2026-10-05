@@ -6,6 +6,7 @@ import (
 
 	policieskyvernoio "github.com/kyverno/api/api/policies.kyverno.io"
 	policiesv1beta1 "github.com/kyverno/api/api/policies.kyverno.io/v1beta1"
+	"github.com/kyverno/kyverno/pkg/cel/requestbudget"
 	"github.com/kyverno/sdk/extensions/imagedataloader"
 	admissionv1 "k8s.io/api/admission/v1"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
@@ -23,6 +24,9 @@ type CompiledImageValidatingPolicy struct {
 }
 
 func Evaluate(ctx context.Context, ivpols []*CompiledImageValidatingPolicy, request interface{}, admissionAttr admission.Attributes, namespace runtime.Object, lister k8scorev1.SecretInterface, registryOpts ...imagedataloader.Option) (map[string]*EvaluationResult, error) {
+	// A shared CEL cost budget for every policy this call evaluates (requestbudget.Ensure
+	// is a no-op if the webhook handler already set one on ctx).
+	ctx, _ = requestbudget.Ensure(ctx)
 	ictx, err := imagedataloader.NewImageContext(lister, registryOpts...)
 	if err != nil {
 		return nil, err

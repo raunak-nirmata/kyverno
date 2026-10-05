@@ -71,7 +71,7 @@ func NewURProcessor(
 			if err != nil {
 				return fmt.Errorf("failed to fetch policy %s: %w", spec.GetPolicyKey(), err)
 			}
-			_, err = engine.Handle(request, policy, rc.CacheRestore)
+			_, err = engine.Handle(context.TODO(), request, policy, rc.CacheRestore)
 			if err != nil {
 				return fmt.Errorf("failed to process UR for policy %s: %w", spec.GetPolicyKey(), err)
 			}

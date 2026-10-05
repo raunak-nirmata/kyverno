@@ -14,6 +14,7 @@ import (
 	"github.com/kyverno/kyverno/pkg/cel/engine"
 	"github.com/kyverno/kyverno/pkg/cel/libs"
 	"github.com/kyverno/kyverno/pkg/cel/matching"
+	"github.com/kyverno/kyverno/pkg/cel/requestbudget"
 	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
 	eval "github.com/kyverno/kyverno/pkg/image/verification/evaluator"
 	admissionutils "github.com/kyverno/kyverno/pkg/utils/admission"
@@ -69,6 +70,11 @@ func NewEngine(
 
 func (e *engineImpl) HandleValidating(ctx context.Context, request EngineRequest, predicate Predicate) (eval.ImageVerifyEngineResponse, error) {
 	var response eval.ImageVerifyEngineResponse
+	// A shared CEL cost budget for every policy this call evaluates (requestbudget.Ensure
+	// is a no-op if the webhook handler already set one on ctx). This engine compiles and
+	// evaluates image policies itself rather than going through evaluator.Evaluate, so it
+	// needs its own Ensure the same way the other families' engines do.
+	ctx, _ = requestbudget.Ensure(ctx)
 	// fetch compiled policies
 	policies, err := e.provider.Fetch(ctx)
 	if err != nil {
@@ -129,6 +135,11 @@ func (e *engineImpl) HandleValidating(ctx context.Context, request EngineRequest
 
 func (e *engineImpl) HandleMutating(ctx context.Context, request EngineRequest, predicate Predicate) (eval.ImageVerifyEngineResponse, []jsonpatch.JsonPatchOperation, error) {
 	var response eval.ImageVerifyEngineResponse
+	// A shared CEL cost budget for every policy this call evaluates (requestbudget.Ensure
+	// is a no-op if the webhook handler already set one on ctx). This engine compiles and
+	// evaluates image policies itself rather than going through evaluator.Evaluate, so it
+	// needs its own Ensure the same way the other families' engines do.
+	ctx, _ = requestbudget.Ensure(ctx)
 	// fetch compiled policies
 	policies, err := e.provider.Fetch(ctx)
 	if err != nil {

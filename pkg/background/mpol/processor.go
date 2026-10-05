@@ -18,6 +18,7 @@ import (
 	"github.com/kyverno/kyverno/pkg/cel/compiler"
 	"github.com/kyverno/kyverno/pkg/cel/libs"
 	mpolengine "github.com/kyverno/kyverno/pkg/cel/policies/mpol/engine"
+	"github.com/kyverno/kyverno/pkg/cel/requestbudget"
 	"github.com/kyverno/kyverno/pkg/client/clientset/versioned"
 	"github.com/kyverno/kyverno/pkg/clients/dclient"
 	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
@@ -77,6 +78,13 @@ func NewProcessor(client dclient.Interface,
 }
 
 func (p *processor) Process(ur *kyvernov2.UpdateRequest) error {
+	// A shared CEL cost budget for every target this mutate-existing UpdateRequest
+	// evaluates below (requestbudget.Charge, wired through program.go's ContextEval);
+	// Process has no caller-supplied ctx to build on, unlike the admission path.
+	// EnsureBackground, not Ensure: this runs under the background-controller pod, whose
+	// chart memory limit is a third of the admission controller's (requestbudget's own
+	// comment on backgroundBudget).
+	ctx, _ := requestbudget.EnsureBackground(context.TODO())
 	var (
 		err      error
 		failures []error
@@ -120,7 +128,9 @@ func (p *processor) Process(ur *kyvernov2.UpdateRequest) error {
 			targets = &unstructured.UnstructuredList{Items: list}
 		}
 	} else {
-		targets, err = p.getTargetsFromExpression(context.TODO(), ur, mpol)
+		// ctx, not context.TODO(): the target expression is CEL and must charge the
+		// request budget established above.
+		targets, err = p.getTargetsFromExpression(ctx, ur, mpol)
 		if err != nil {
 			return err
 		}
@@ -153,7 +163,7 @@ func (p *processor) Process(ur *kyvernov2.UpdateRequest) error {
 			admissionpolicy.NewUser(ar.UserInfo),
 		)
 
-		response, err := p.engine.Evaluate(context.TODO(), attr, *ar, mpolengine.And(mpolengine.MatchNames(ur.Spec.Policy), mpolengine.Or(mpolengine.ClusteredPolicy(), mpolengine.NamespacedPolicy(attr.GetNamespace()))))
+		response, err := p.engine.Evaluate(ctx, attr, *ar, mpolengine.And(mpolengine.MatchNames(ur.Spec.Policy), mpolengine.Or(mpolengine.ClusteredPolicy(), mpolengine.NamespacedPolicy(attr.GetNamespace()))))
 		if err != nil {
 			failures = append(failures, fmt.Errorf("failed to evaluate mpol %s: %v", ur.Spec.GetPolicyKey(), err))
 			continue
@@ -382,7 +392,7 @@ func (p *processor) getResourcesFromExpression(ctx context.Context, expr, policy
 	if !ast.OutputType().IsExactType(types.NewMapType(types.StringType, types.AnyType)) {
 		return nil, field.Invalid(nil, expr, "output type of the target selector expression must be a map")
 	}
-	prog, err := e.Program(ast)
+	prog, err := compiler.NewProgram(e, ast)
 	if err != nil {
 		return nil, err
 	}
