@@ -1,0 +1,85 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Unit tests
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - main
+      - release-*
+  push:
+    branches:
+      - main
+      - release-*
+
+concurrency:
+  group: ${{ github.workflow_ref }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Credentials for the private Nirmata Go modules (license-guardian). Consumed by
+  # .github/actions/go/install. DEPLOYMENT_* are organisation secrets.
+  GOPRIVATE: github.com/nirmata
+  GH_DEP_USERNAME: ${{ secrets.DEPLOYMENT_USERNAME }}
+  GH_DEP_PAT: ${{ secrets.DEPLOYMENT_PAT }}
+
+jobs:
+  tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      # make test-unit runs the whole tree under -race; ubuntu-latest runs out of
+      # disk without this.
+      - uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          android: true
+          docker-images: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          swap-storage: false
+          tool-cache: false
+      - name: Setup Go
+        id: setup-go
+        uses: ./.github/actions/go/setup
+        with:
+          gobuild-cache-prefix: gobuild-unit-tests
+      - name: Unit test
+        run: make test-unit
+      - name: Save gobuild cache
+        if: |
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main'
+        uses: ./.github/actions/go/save-cache
+        with:
+          path: ${{ steps.setup-go.outputs.gobuild-cache }}
+          cache-prefix: gobuild-unit-tests
+      - name: Upload coverage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage.out
+          path: coverage.out
+          retention-days: 1
+          if-no-files-found: error
+
+  sync-issue:
+    if: always() && github.event_name == 'push'
+    needs:
+      - tests
+    permissions:
+      contents: read
+      issues: write
+    runs-on: ubuntu-slim
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Sync issue
+        uses: ./.github/actions/workflow/failure-issue
+        with:
+          conclusion: ${{ contains(needs.*.result, 'failure') && 'failure' || job.status }}
+          needs: ${{ toJSON(needs) }}
