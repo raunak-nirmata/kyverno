@@ -44,10 +44,16 @@ var defaultAPICallBlocklist = []string{
 	//                             it sits in, which must stay reachable for in-cluster IPv6
 	"100.100.100.200/32",       // Alibaba Cloud metadata service
 	"127.0.0.0/8",              // IPv4 loopback: sidecars in the Kyverno pod
+	"0.0.0.0/32",               // unspecified IPv4: connects to loopback, so 127.0.0.0/8 on its own is bypassable
 	"::1/128",                  // IPv6 loopback
+	"::/128",                   // unspecified IPv6: same bypass as 0.0.0.0
 	"metadata.google.internal", // GCP metadata service hostname
 	"metadata.internal",        // Oracle Cloud metadata service hostname
 }
+
+// The SDK's default blocklist omits the unspecified addresses, which connect to
+// loopback and so bypass its 127.0.0.0/8 entry.
+var unspecifiedAddresses = []string{"0.0.0.0/32", "::/128"}
 
 const (
 	// protect managed resource
@@ -120,7 +126,7 @@ var (
 	DumpMutatePatches                 = newToggle(defaultDumpMutatePatches, dumpMutatePatchesEnvVar)
 	AutogenV2                         = newToggle(defaultAutogenV2, autogenV2EnvVar)
 	AllowHTTPInNamespacedPolicies     = newToggle(defaultAllowHTTPInNamespacedPolicies, allowHTTPInNamespacedPoliciesEnvVar)
-	HTTPBlocklist                     = newStringSliceFlag(append(append([]string{}, sdkhttp.DefaultBlockedCIDRs...), sdkhttp.DefaultBlockedHosts...), httpBlocklistEnvVar)
+	HTTPBlocklist                     = newStringSliceFlag(append(append(append([]string{}, sdkhttp.DefaultBlockedCIDRs...), sdkhttp.DefaultBlockedHosts...), unspecifiedAddresses...), httpBlocklistEnvVar)
 	HTTPAllowlist                     = newStringSliceFlag(nil, httpAllowlistEnvVar)
 	APICallBlocklist                  = newStringSliceFlag(defaultAPICallBlocklist, apiCallBlocklistEnvVar)
 	APICallAllowlist                  = newStringSliceFlag(nil, apiCallAllowlistEnvVar)

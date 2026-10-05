@@ -500,19 +500,17 @@ func generateTestCA(t *testing.T) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
-// Test_SSRF_loopbackBlockedByDefault_unspecifiedIsNot pins what the shipped default does
+// Test_SSRF_loopbackAndUnspecifiedBlockedByDefault pins what the shipped default does
 // with addresses that reach listeners inside the Kyverno pod.
 //
-// Loopback is blocked, matching upstream. A sidecar in the pod can hold credentials -- a
-// Vault agent with auto-auth on 127.0.0.1:8200 is the case that matters -- and reading
-// from it is the same credential theft this guard exists to stop.
+// A sidecar in the pod can hold credentials -- a Vault agent with auto-auth on
+// 127.0.0.1:8200 is the case that matters -- and reading from it is the same credential
+// theft this guard exists to stop.
 //
-// The unspecified addresses are a known residual. connect() to 0.0.0.0 or :: routes to
-// loopback, so they reach the same listeners, but they are not inside 127.0.0.0/8 or
-// ::1/128 and upstream does not block them either. Adding them would widen the default
-// past upstream's; operators who want them can add them explicitly. Asserted here so the
-// gap stays visible instead of being rediscovered later.
-func Test_SSRF_loopbackBlockedByDefault_unspecifiedIsNot(t *testing.T) {
+// The unspecified addresses are blocked too. connect() to 0.0.0.0 or :: reaches those same
+// listeners while sitting outside 127.0.0.0/8 and ::1/128, so leaving them out made the
+// loopback entry bypassable by changing three characters.
+func Test_SSRF_loopbackAndUnspecifiedBlockedByDefault(t *testing.T) {
 	t.Run("loopback is blocked under the shipped default", func(t *testing.T) {
 		useDefaultBlocklist(t)
 		defer toggle.APICallBlocklist.Reset()
@@ -525,27 +523,17 @@ func Test_SSRF_loopbackBlockedByDefault_unspecifiedIsNot(t *testing.T) {
 		}
 	})
 
-	t.Run("unspecified addresses remain reachable, as upstream leaves them", func(t *testing.T) {
+	t.Run("unspecified addresses are blocked under the shipped default", func(t *testing.T) {
 		useDefaultBlocklist(t)
 		defer toggle.APICallBlocklist.Reset()
 
 		f, err := newServiceCallFilter()
 		require.NoError(t, err)
+		// Literal forms only. Spellings that need resolving, such as a bare "0",
+		// are rejected by the dial-time guard instead of this pre-flight check.
 		for _, host := range []string{"0.0.0.0", "[::]"} {
-			assert.NoError(t, f.validateURL("http://"+host+"/"),
-				"%s is a known residual, not blocked by default", host)
-		}
-	})
-
-	t.Run("blocked once the operator adds them", func(t *testing.T) {
-		require.NoError(t, toggle.APICallBlocklist.Parse("127.0.0.0/8,::1/128,0.0.0.0/32,::/128"))
-		defer toggle.APICallBlocklist.Reset()
-
-		f, err := newServiceCallFilter()
-		require.NoError(t, err)
-		for _, host := range []string{"127.0.0.1", "0.0.0.0", "[::]", "[::1]"} {
 			assert.Error(t, f.validateURL("http://"+host+"/"),
-				"%s must be blocked once configured", host)
+				"%s reaches loopback and must be blocked by default", host)
 		}
 	})
 }
@@ -605,6 +593,8 @@ func Test_SSRF_addressFormMatrix(t *testing.T) {
 		{"[fd00:ec2::254]", "AWS IPv6 IMDS"},
 		{"100.100.100.200", "Alibaba Cloud metadata"},
 		{"[fe80::1]", "IPv6 link-local"},
+		{"0.0.0.0", "unspecified IPv4: reaches a loopback listener"},
+		{"[::]", "unspecified IPv6: reaches a loopback listener"},
 		{"metadata.google.internal", "GCP metadata hostname"},
 	}
 	for _, tc := range blocked {
@@ -622,9 +612,6 @@ func Test_SSRF_addressFormMatrix(t *testing.T) {
 		{"[2001:db8::1]", "ordinary IPv6"},
 		{"my-svc.my-ns.svc.cluster.local", "in-cluster DNS"},
 		{"8.8.8.8", "ordinary public IPv4"},
-		// Deliberately reachable under the minimal default profile. See
-		// Test_SSRF_loopbackNotBlockedByDefault_butConfigurable for the reasoning.
-		{"0.0.0.0", "unspecified: same"},
 		{"255.255.255.255", "broadcast: not an HTTP target"},
 		{"224.0.0.1", "multicast: not an HTTP target"},
 	}
