@@ -152,8 +152,12 @@ func (c *compiledPolicy) Evaluate(ctx context.Context, ictx imagedataloader.Imag
 		}
 	}
 
-	if err := ictx.AddImages(ctx, imgList, imageverify.GetRemoteOptsFromPolicy(c.creds)...); err != nil {
-		return nil, err
+	// Prefetch image data through Get() one image at a time to avoid triggering
+	// racy concurrent map writes in the SDK AddImages() implementation.
+	for _, image := range imgList {
+		if _, err := ictx.Get(ctx, image, imageverify.GetRemoteOptsFromPolicy(c.creds)...); err != nil {
+			return nil, err
+		}
 	}
 
 	data[engine.ImagesKey] = filteredImages
