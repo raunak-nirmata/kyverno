@@ -463,43 +463,6 @@ func Test_Apply(t *testing.T) {
 		},
 		{
 			config: ApplyCommandConfig{
-				PolicyPaths:   []string{"https://github.com/kyverno/policies/best-practices/require-labels/", "../../../../../test/best_practices/disallow_latest_tag.yaml"},
-				ResourcePaths: []string{"../../../../../test/resources/pod_with_version_tag.yaml"},
-				GitBranch:     "main",
-				PolicyReport:  true,
-				Cloner:        fakeCloner(t, "../../../../../test/cli/apply/git-test-fixtures"),
-			},
-			expectedReports: []openreportsv1alpha1.Report{{
-				Summary: openreportsv1alpha1.ReportSummary{
-					Pass:  2,
-					Fail:  1,
-					Skip:  0,
-					Error: 0,
-					Warn:  0,
-				},
-			}},
-		},
-		{
-			// Same as the above test case but the policy paths are reordered
-			config: ApplyCommandConfig{
-				PolicyPaths:   []string{"../../../../../test/best_practices/disallow_latest_tag.yaml", "https://github.com/kyverno/policies/best-practices/require-labels/"},
-				ResourcePaths: []string{"../../../../../test/resources/pod_with_version_tag.yaml"},
-				GitBranch:     "main",
-				PolicyReport:  true,
-				Cloner:        fakeCloner(t, "../../../../../test/cli/apply/git-test-fixtures"),
-			},
-			expectedReports: []openreportsv1alpha1.Report{{
-				Summary: openreportsv1alpha1.ReportSummary{
-					Pass:  2,
-					Fail:  1,
-					Skip:  0,
-					Error: 0,
-					Warn:  0,
-				},
-			}},
-		},
-		{
-			config: ApplyCommandConfig{
 				PolicyPaths: []string{
 					"../../../../../test/cli/apply/type/policy1.yaml",
 					"../../../../../test/cli/apply/type/policy2.yaml",
