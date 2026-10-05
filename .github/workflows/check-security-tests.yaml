@@ -1,0 +1,53 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+# Runs the unit tests for the wildcard-matching and variable-substitution
+# hardening packages with the race detector. It is intentionally scoped to a
+# few packages rather than the whole suite: the full unit-test workflow is
+# parked on this branch for unrelated reasons, and these security regression
+# tests would otherwise run in no CI job at all.
+
+name: Security regression tests
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches:
+      - main
+      - release-*
+  push:
+    branches:
+      - main
+      - release-*
+
+concurrency:
+  group: ${{ github.workflow_ref }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Credentials for the private Nirmata Go modules (license-guardian). Consumed by
+  # .github/actions/go/install. DEPLOYMENT_* are organisation secrets.
+  GOPRIVATE: github.com/nirmata
+  GH_DEP_USERNAME: ${{ secrets.DEPLOYMENT_USERNAME }}
+  GH_DEP_PAT: ${{ secrets.DEPLOYMENT_PAT }}
+
+jobs:
+  test:
+    name: Security regression tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup Go
+        uses: ./.github/actions/go/setup
+      - name: Run security regression tests
+        run: |
+          go test -race \
+            ./ext/wildcard/... \
+            ./pkg/engine/variables/... \
+            ./pkg/engine/jmespath/... \
+            ./pkg/validation/policy/... \
+            ./pkg/validation/exception/...

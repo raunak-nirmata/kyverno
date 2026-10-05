@@ -81,14 +81,20 @@ func keyExistsInArray(key string, value interface{}, log logr.Logger) (invalidTy
 		}
 
 	default:
-		// A bare value that is neither an array nor a string is treated
-		// as a one-element set through the same primitive that already
-		// coerces array elements: a comparable scalar (int, float, bool)
-		// compares like any array element would, and an opaque value
-		// (map, nil, ...) simply never matches -- no separate error path.
+		// A bare comparable scalar (int, float, bool) is treated as a
+		// one-element set through the same primitive that coerces array
+		// elements. An opaque value (null, map, nested object) has no
+		// literal form to compare against, so its membership is undefined:
+		// report an invalid type and let In and *NotIn both fail safe to
+		// false, so a deny rule does not silently fire on absent or
+		// non-scalar data (#1039).
+		valueElement := toElement(valuesAvailable)
+		if !valueElement.comparable {
+			return true, false
+		}
 		// Directional, matching the scalar-value semantics above: value
 		// is the pattern, key is the concrete string.
-		if wildcardElementDirectional(toElement(valuesAvailable), keyElement) {
+		if wildcardElementDirectional(valueElement, keyElement) {
 			return false, true
 		}
 	}
@@ -145,9 +151,14 @@ func setExistsInArray(key []element, value interface{}, log logr.Logger, notIn b
 		return false, isIn(key, valueElements)
 
 	default:
-		// Same rationale as keyExistsInArray's default case: a bare value
-		// is a one-element set through the shared primitive.
-		valueElements := []element{toElement(value)}
+		// Same rationale as keyExistsInArray's default case. An opaque
+		// value (null, map, nested object) is not comparable, so report an
+		// invalid type and let In/*NotIn fail safe to false (#1039).
+		valueElement := toElement(value)
+		if !valueElement.comparable {
+			return true, false
+		}
+		valueElements := []element{valueElement}
 		if notIn {
 			return false, isNotIn(key, valueElements)
 		}

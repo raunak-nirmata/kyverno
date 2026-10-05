@@ -280,12 +280,16 @@ func TestBareScalarValueComparesInsteadOfErroring(t *testing.T) {
 	}
 }
 
-// TestBareNonComparableValueFailsClosedWithoutPanic pins the other half of
-// the fix: a bare value that is genuinely non-comparable (a map, or nil)
-// must not panic and must fail closed -- In/AnyIn/AllIn false, NotIn/
-// AnyNotIn/AllNotIn true -- with no fmt.Sprint junk-text match, exactly
-// like an opaque element embedded in an array already behaves.
-func TestBareNonComparableValueFailsClosedWithoutPanic(t *testing.T) {
+// TestBareNonComparableValueFailsSafeWithoutPanic pins the #1039 correction:
+// a bare value that is genuinely non-comparable (a map, or nil) must not
+// panic, and its membership is undefined rather than false. Every In-family
+// operator returns false, so in particular a NotIn/AnyNotIn/AllNotIn deny
+// rule does NOT fire on absent or non-scalar data (the production casualty
+// was an AnyNotIn over request.userInfo.groups that resolved to nil). This is
+// three-valued (SQL NULL) semantics: In and NotIn are both false on an opaque
+// value, so they are deliberately NOT complements here -- complementarity is
+// scoped to comparable values in TestBareScalarValueComplementsHold.
+func TestBareNonComparableValueFailsSafeWithoutPanic(t *testing.T) {
 	in := NewInHandler(logr.Discard(), nil)
 	notin := NewNotInHandler(logr.Discard(), nil)
 	anyin := NewAnyInHandler(logr.Discard(), nil)
@@ -307,18 +311,44 @@ func TestBareNonComparableValueFailsClosedWithoutPanic(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.False(t, in.Evaluate(tt.key, tt.value))
-			assert.True(t, notin.Evaluate(tt.key, tt.value))
+			assert.False(t, notin.Evaluate(tt.key, tt.value))
 			assert.False(t, anyin.Evaluate(tt.key, tt.value))
-			assert.True(t, anynotin.Evaluate(tt.key, tt.value))
+			assert.False(t, anynotin.Evaluate(tt.key, tt.value))
 			assert.False(t, allin.Evaluate(tt.key, tt.value))
-			assert.True(t, allnotin.Evaluate(tt.key, tt.value))
+			assert.False(t, allnotin.Evaluate(tt.key, tt.value))
 		})
 	}
 }
 
+// TestNotInFamilyDoesNotFireOnNullValue is the #1039 regression guard. A
+// *NotIn deny rule whose "value" operand resolves to null -- for example an
+// AnyNotIn over request.userInfo.groups when the request carries no userInfo,
+// the confirmed production casualty -- must NOT fire. Before this fix it
+// flipped to a deny and blocked workloads under Enforce. Comparable values are
+// unaffected: a present, non-matching scalar still resolves to a deny.
+func TestNotInFamilyDoesNotFireOnNullValue(t *testing.T) {
+	notin := NewNotInHandler(logr.Discard(), nil)
+	anynotin := NewAnyNotInHandler(logr.Discard(), nil)
+	allnotin := NewAllNotInHandler(logr.Discard(), nil)
+
+	key := []interface{}{"system:authenticated"}
+
+	// null value: the deny must not fire
+	assert.False(t, notin.Evaluate(key, nil))
+	assert.False(t, anynotin.Evaluate(key, nil))
+	assert.False(t, allnotin.Evaluate(key, nil))
+
+	// a present, non-matching scalar value still resolves to a deny
+	assert.True(t, notin.Evaluate(key, "other"))
+	assert.True(t, anynotin.Evaluate(key, "other"))
+	assert.True(t, allnotin.Evaluate(key, "other"))
+}
+
 // TestBareScalarValueComplementsHold re-asserts NotIn == !In (and the
 // Any/All twins) specifically over the bare-scalar-value shape, across
-// present, absent, and non-comparable rows.
+// present and absent rows. Complementarity is scoped to comparable values on
+// purpose: an opaque (null/map) value is three-valued and makes both sides
+// false, which TestBareNonComparableValueFailsSafeWithoutPanic covers (#1039).
 func TestBareScalarValueComplementsHold(t *testing.T) {
 	in := NewInHandler(logr.Discard(), nil)
 	notin := NewNotInHandler(logr.Discard(), nil)
@@ -338,8 +368,6 @@ func TestBareScalarValueComplementsHold(t *testing.T) {
 		{"present bool", "true", true},
 		{"array key present", []interface{}{"1"}, 1},
 		{"array key absent", []interface{}{"1"}, 2},
-		{"non-comparable map", "1", map[string]interface{}{"a": "b"}},
-		{"non-comparable nil", "1", nil},
 	}
 
 	for _, tt := range cases {

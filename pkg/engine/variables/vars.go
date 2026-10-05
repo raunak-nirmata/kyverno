@@ -365,16 +365,29 @@ func isAliasValue(v string) bool {
 	return v != "" && regex.RegexVariableInit.FindString(v) == v
 }
 
-// maxTotalSubstitutions is a hard backstop on the number of substitutions
-// a single leaf may require, independent of budget's alias-replenishment
+// maxTotalSubstitutions is a hard backstop on the number of substitutions a
+// single document may require, independent of budget's alias-replenishment
 // and the visited-set cycle detection (see the comment on totalSubs in
-// substituteVariablesIfAny). It is sized far above any legitimate nesting
-// -- real policies nest a handful of variables deep -- so it only fires as
-// a defense-in-depth backstop, not a working-policy limit. Kept in the
-// thousands rather than larger: each alias hop's visited-set carries its
-// own copy of every name seen so far, so an n-hop chain costs O(n^2); a
-// tighter cap here bounds that work too, not just the hop count.
+// substituteVariablesIfAny). It is counted across every leaf of one
+// SubstituteAll traversal, not per leaf, so many small leaves cannot
+// collectively exceed it. It is sized far above any legitimate nesting --
+// real policies nest a handful of variables deep -- so it only fires as a
+// defense-in-depth backstop, not a working-policy limit. Kept in the
+// thousands rather than larger: each alias hop's visited-set carries its own
+// copy of every name seen so far, so an n-hop chain costs O(n^2); a tighter
+// cap here bounds that work too, not just the hop count.
 const maxTotalSubstitutions = 5_000
+
+// maxSubstitutedOutputBytes caps the total bytes variable substitution may
+// produce across one SubstituteAll traversal. The count cap above bounds how
+// many substitutions run, but not how large each result is: a few thousand
+// substitutions each splicing in a multi-megabyte value stay within the count
+// budget while expanding the document into gigabytes. This bounds the output
+// itself. The anchor is the request size an admission webhook accepts: the
+// apiserver default --max-request-body-bytes is 3 MiB and the etcd object
+// limit is ~1.5 MiB, so 10 MiB is roughly 3x the largest legitimate single
+// request while still refusing gigabyte-scale blowups.
+const maxSubstitutedOutputBytes = 10 << 20
 
 // substituteVariablesIfAny resolves "{{ ... }}" variable references in a
 // leaf string.
@@ -386,6 +399,15 @@ const maxTotalSubstitutions = 5_000
 // data and is not re-scanned for delimiters in that pass.
 func substituteVariablesIfAny(log logr.Logger, ctx context.EvalInterface, lookupVar VariableResolver) jsonUtils.Action {
 	isDeleteRequest := isDeleteRequest(ctx)
+
+	// totalSubs and totalOutputBytes are per-document backstops shared across
+	// every leaf of this traversal. substituteVariablesIfAny is called once per
+	// SubstituteAll and returns a fresh Action each time, so these never leak
+	// across requests; the traversal visits leaves sequentially, so the shared
+	// counters need no synchronization.
+	totalSubs := 0
+	totalOutputBytes := 0
+
 	return jsonUtils.OnlyForLeafsAndKeys(func(data *jsonUtils.ActionData) (interface{}, error) {
 		value, ok := data.Element.(string)
 		if !ok {
@@ -401,16 +423,6 @@ func substituteVariablesIfAny(log logr.Logger, ctx context.EvalInterface, lookup
 		// Because every other kind of introduced text is protected and never
 		// re-scanned, this count is exact, not a heuristic cap.
 		budget := strings.Count(value, "{{")
-
-		// totalSubs is a hard backstop, independent of budget: an alias hop
-		// replenishes budget, so budget alone only bounds non-alias
-		// substitutions. Alias chains are already bounded by the visited
-		// cycle-detection set (a repeated name is an error), but that set's
-		// size is the number of distinct addressable variable names, which
-		// could be large. totalSubs is never replenished by anything,
-		// including alias hops, so it caps the absolute total regardless of
-		// how budget and the visited set behave.
-		totalSubs := 0
 
 		for {
 			matches := regex.RegexVariables.FindAllStringSubmatchIndex(value, -1)
@@ -510,6 +522,13 @@ func substituteVariablesIfAny(log logr.Logger, ctx context.EvalInterface, lookup
 			totalSubs++
 			if totalSubs > maxTotalSubstitutions {
 				return nil, fmt.Errorf("failed to resolve %v at path %s: exceeded the hard limit on total variable substitutions", variable, data.Path)
+			}
+
+			// Bound the total output produced across the document, not just
+			// the number of substitutions: one value spliced in can be huge.
+			totalOutputBytes += len(repl)
+			if totalOutputBytes > maxSubstitutedOutputBytes {
+				return nil, fmt.Errorf("failed to resolve %v at path %s: exceeded the maximum substituted output size of %d bytes", variable, data.Path, maxSubstitutedOutputBytes)
 			}
 
 			delta := len(repl) - (g2end - g2start)
