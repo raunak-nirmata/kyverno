@@ -933,6 +933,7 @@ endef
 helm-setup-dependency-charts: $(HELM) ## Add dependency helm repos and build dependencies
 	@echo Setting up helm dependencies... >&2
 	@$(HELM) repo add openreports https://openreports.github.io/reports-api
+	@$(HELM) repo add nirmata-kyverno-charts https://nirmata.github.io/kyverno-charts
 	@$(HELM) repo add reports-server https://kyverno.github.io/reports-server
 	@$(HELM) repo add kyverno-api https://kyverno.github.io/api
 	@$(HELM) dependency update ./charts/kyverno
