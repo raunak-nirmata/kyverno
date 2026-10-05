@@ -27,6 +27,9 @@ jobs:
   publish-images:
     runs-on: xr1
     permissions:
+      # A job-level permissions block replaces the workflow-level one rather than
+      # merging with it, so contents: read has to be repeated here or checkout 404s.
+      contents: read
       packages: write
       id-token: write
     outputs:
