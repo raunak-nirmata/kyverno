@@ -1,12 +1,6 @@
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 
-# Runs the unit tests for the wildcard-matching and variable-substitution
-# hardening packages with the race detector. It is intentionally scoped to a
-# few packages rather than the whole suite: the full unit-test workflow is
-# parked on this branch for unrelated reasons, and these security regression
-# tests would otherwise run in no CI job at all.
-
-name: Security regression tests
+name: Unit tests
 
 permissions:
   contents: read
@@ -33,21 +27,37 @@ env:
   GH_DEP_PAT: ${{ secrets.DEPLOYMENT_PAT }}
 
 jobs:
-  test:
-    name: Security regression tests
+  tests:
+    name: Unit tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+      # make test-unit runs the whole tree under -race; ubuntu-latest runs out
+      # of disk without this.
+      - uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          android: true
+          docker-images: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          swap-storage: false
+          tool-cache: false
       - name: Setup Go
+        id: setup-go
         uses: ./.github/actions/go/setup
-      - name: Run security regression tests
-        run: |
-          go test -race \
-            ./ext/wildcard/... \
-            ./pkg/engine/variables/... \
-            ./pkg/engine/jmespath/... \
-            ./pkg/validation/policy/... \
-            ./pkg/validation/exception/...
+        with:
+          gobuild-cache-prefix: gobuild-unit-tests
+      - name: Unit test
+        run: make test-unit
+      - name: Save gobuild cache
+        if: |
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main'
+        uses: ./.github/actions/go/save-cache
+        with:
+          path: ${{ steps.setup-go.outputs.gobuild-cache }}
+          cache-prefix: gobuild-unit-tests
