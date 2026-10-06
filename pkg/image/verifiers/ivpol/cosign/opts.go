@@ -203,7 +203,8 @@ func checkOptions(ctx context.Context, att *v1beta1.Cosign, baseROpts []remote.O
 	return opts, nil
 }
 
-func initializeTuf(ctx context.Context, t *v1beta1.TUF) error {
+// initializeTuf is a variable so that tests can skip the global TUF bootstrap, which needs a remote mirror.
+var initializeTuf = func(ctx context.Context, t *v1beta1.TUF) error {
 	if t != nil {
 		var root []byte
 		var err error

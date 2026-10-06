@@ -2,11 +2,15 @@ package cosign
 
 import (
 	"context"
+	"encoding/hex"
+	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"strings"
 
 	"github.com/go-logr/logr"
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	policiesv1beta1 "github.com/kyverno/api/api/policies.kyverno.io/v1beta1"
 	"github.com/kyverno/kyverno/pkg/image/verifiers"
 	"github.com/kyverno/kyverno/pkg/logging"
@@ -15,8 +19,11 @@ import (
 	"github.com/sigstore/cosign/v3/pkg/cosign"
 	"github.com/sigstore/cosign/v3/pkg/oci"
 	ociremote "github.com/sigstore/cosign/v3/pkg/oci/remote"
+	ocistatic "github.com/sigstore/cosign/v3/pkg/oci/static"
 	"github.com/sigstore/cosign/v3/pkg/policy"
+	protobundle "github.com/sigstore/protobuf-specs/gen/pb-go/bundle/v1"
 	sgbundle "github.com/sigstore/sigstore-go/pkg/bundle"
+	verify "github.com/sigstore/sigstore-go/pkg/verify"
 )
 
 type Verifier struct {
@@ -31,17 +38,22 @@ func NewVerifier(secretInterface imagedataloader.SecretInterface, logger logr.Lo
 	}
 }
 
-// buildCheckOptsWithBundleDetection builds CheckOpts and auto-detects cosign v3 bundle format
-func (v *Verifier) buildCheckOptsWithBundleDetection(ctx context.Context, attestor *policiesv1beta1.Cosign, image *imagedataloader.ImageData) (*cosign.CheckOpts, error) {
+// bundleDetectLog names the logger used by loadBundles, which runs outside any Verifier method.
+var bundleDetectLog = logging.WithName("Cosign")
+
+// buildCheckOptsWithBundleDetection builds CheckOpts and loads any cosign v3 bundles
+// attached as referrers. Detection and fetch are the same bounded read: the bundles
+// returned here are what gets verified, so there is no second, unbounded read later.
+func (v *Verifier) buildCheckOptsWithBundleDetection(ctx context.Context, attestor *policiesv1beta1.Cosign, image *imagedataloader.ImageData) (*cosign.CheckOpts, []*sgbundle.Bundle, *v1.Hash, error) {
 	cOpts, err := checkOptions(ctx, attestor, image.RemoteOpts(), image.NameOpts(), v.secretInterface)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 
-	// Auto-detect if new bundle format is actually present (cosign v3)
-	cOpts.NewBundleFormat = hasBundleReferrer(image.NameRef(), cOpts.RegistryClientOpts)
+	bundles, hash := loadBundles(image.NameRef(), cOpts.RegistryClientOpts)
+	cOpts.NewBundleFormat = len(bundles) > 0
 
-	return cOpts, nil
+	return cOpts, bundles, hash, nil
 }
 
 // sigstoreBundleMediaTypePrefix identifies the layer of a cosign v3 bundle referrer.
@@ -50,17 +62,38 @@ const sigstoreBundleMediaTypePrefix = "application/vnd.dev.sigstore.bundle"
 // maxBundleLayerSize bounds a bundle layer read, matching the limit used for other registry reads.
 const maxBundleLayerSize = int64(10 * 1000 * 1000)
 
-// hasBundleReferrer reports whether a cosign v3 bundle is attached to ref, by
-// applying cosign's own bundle acceptance check to layer bytes read under a size limit.
-func hasBundleReferrer(ref name.Reference, registryClientOpts []ociremote.Option) bool {
+// parseBundleLayer applies cosign's own bundle acceptance check to layer bytes already
+// read under a size limit, returning nil if the content is not a usable v0.3+ bundle.
+func parseBundleLayer(layerBytes []byte) *sgbundle.Bundle {
+	b := &sgbundle.Bundle{}
+	if err := b.UnmarshalJSON(layerBytes); err != nil {
+		return nil
+	}
+	if !b.MinVersion("v0.3") {
+		return nil
+	}
+	return b
+}
+
+// loadBundles reads every referrer of ref once, under the bounded layer read, and
+// returns the ones that parse as cosign v3 bundles, plus the hash of ref's resolved
+// digest. Anything unreadable or unparseable within the limit is skipped, matching
+// cosign's own GetBundles behaviour, so an oversized or junk referrer never diverts
+// verification away from a genuine bundle sitting alongside it.
+func loadBundles(ref name.Reference, registryClientOpts []ociremote.Option) ([]*sgbundle.Bundle, *v1.Hash) {
 	digest, err := ociremote.ResolveDigest(ref, registryClientOpts...)
 	if err != nil {
-		return false
+		return nil, nil
+	}
+	hash, err := v1.NewHash(digest.Identifier())
+	if err != nil {
+		return nil, nil
 	}
 	index, err := ociremote.Referrers(digest, "", registryClientOpts...)
 	if err != nil {
-		return false
+		return nil, nil
 	}
+	var bundles []*sgbundle.Bundle
 	for _, result := range index.Manifests {
 		referrer, err := name.ParseReference(fmt.Sprintf("%s@%s", digest.Repository, result.Digest.String()))
 		if err != nil {
@@ -68,6 +101,7 @@ func hasBundleReferrer(ref name.Reference, registryClientOpts []ociremote.Option
 		}
 		img, err := ociremote.SignedImage(referrer, registryClientOpts...)
 		if err != nil {
+			bundleDetectLog.V(2).Info("skipping referrer", "digest", result.Digest.String(), "reason", err.Error())
 			continue
 		}
 		layers, err := img.Layers()
@@ -82,17 +116,76 @@ func hasBundleReferrer(ref name.Reference, registryClientOpts []ociremote.Option
 		// verification falls back to the v2 path instead of denying the request
 		bundleBytes, err := verifiers.ReadLayerLimited(layers[0], maxBundleLayerSize)
 		if err != nil {
+			bundleDetectLog.V(2).Info("skipping referrer", "digest", result.Digest.String(), "reason", err.Error())
 			continue
 		}
-		b := &sgbundle.Bundle{}
-		if err := b.UnmarshalJSON(bundleBytes); err != nil {
+		bundle := parseBundleLayer(bundleBytes)
+		if bundle == nil {
+			bundleDetectLog.V(2).Info("skipping referrer", "digest", result.Digest.String(), "reason", "not a valid sigstore bundle")
 			continue
 		}
-		if b.MinVersion("v0.3") {
-			return true
-		}
+		bundles = append(bundles, bundle)
 	}
-	return false
+	return bundles, &hash
+}
+
+// verifyBundles verifies each of bundles against hash, reproducing the per-bundle
+// wrapper cosign applies around cosign.VerifyNewBundle (DSSE envelope, claim verifier,
+// "no matching attestations" on total failure), without re-fetching the referrers:
+// the caller already read them once during detection.
+func verifyBundles(ctx context.Context, cOpts *cosign.CheckOpts, bundles []*sgbundle.Bundle, hash *v1.Hash) ([]oci.Signature, bool, error) {
+	// Enforce this up front, matching cosign's own check.
+	if cOpts.RootCerts == nil && cOpts.SigVerifier == nil && cOpts.TrustedMaterial == nil {
+		return nil, false, stderrors.New("one of verifier, root certs, or trusted root is required")
+	}
+
+	digestBytes, err := hex.DecodeString(hash.Hex)
+	if err != nil {
+		return nil, false, err
+	}
+	artifactPolicyOption := verify.WithArtifactDigest(hash.Algorithm, digestBytes)
+
+	var checkedAttestations []oci.Signature
+	var atLeastOneVerified bool
+	var errs []error
+	for _, bundle := range bundles {
+		// verify against a copy: VerifyNewBundle can write UseSignedTimestamps on the
+		// shared CheckOpts before failing, which must not affect a later bundle
+		coCopy := *cOpts
+		if _, err := cosign.VerifyNewBundle(ctx, &coCopy, artifactPolicyOption, bundle); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		dsse, ok := bundle.Content.(*protobundle.Bundle_DsseEnvelope)
+		if !ok {
+			errs = append(errs, fmt.Errorf("bundle does not contain a DSSE envelope"))
+			continue
+		}
+		payload, err := json.Marshal(dsse.DsseEnvelope)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("marshaling DSSE envelope: %w", err))
+			continue
+		}
+		att, err := ocistatic.NewAttestation(payload)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if cOpts.ClaimVerifier != nil {
+			if err := cOpts.ClaimVerifier(att, *hash, cOpts.Annotations); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+		}
+		checkedAttestations = append(checkedAttestations, att)
+		atLeastOneVerified = true
+	}
+
+	if len(checkedAttestations) == 0 {
+		return nil, false, fmt.Errorf("no matching attestations: %w", stderrors.Join(errs...))
+	}
+
+	return checkedAttestations, atLeastOneVerified, nil
 }
 
 func (v *Verifier) VerifyImageSignature(ctx context.Context, image *imagedataloader.ImageData, attestor *policiesv1beta1.Attestor) error {
@@ -103,7 +196,7 @@ func (v *Verifier) VerifyImageSignature(ctx context.Context, image *imagedataloa
 	logger := v.log.WithValues("image", image.Image, "digest", image.Digest, "attestor", attestor.Name)
 	logger.V(2).Info("verifying cosign image signature", "image", image.Image)
 
-	cOpts, err := v.buildCheckOptsWithBundleDetection(ctx, attestor.Cosign, image)
+	cOpts, bundles, hash, err := v.buildCheckOptsWithBundleDetection(ctx, attestor.Cosign, image)
 	if err != nil {
 		err := errors.Wrapf(err, "failed to build cosign verification opts")
 		logger.Error(err, "image verification failed")
@@ -121,7 +214,7 @@ func (v *Verifier) VerifyImageSignature(ctx context.Context, image *imagedataloa
 	var verified bool
 
 	if cOpts.NewBundleFormat {
-		sigs, verified, err = cosign.VerifyImageAttestations(ctx, image.NameRef(), cOpts)
+		sigs, verified, err = verifyBundles(ctx, cOpts, bundles, hash)
 	} else {
 		sigs, verified, err = cosign.VerifyImageSignatures(ctx, image.NameRef(), cOpts)
 	}
@@ -169,7 +262,7 @@ func (v *Verifier) VerifyAttestationSignature(ctx context.Context, image *imaged
 	logger := v.log.WithValues("image", image.Image, "digest", image.Digest, "attestation", attestation.Name, "attestor", attestor.Name)
 	logger.V(2).Info("verifying cosign attestation signature", "image", image.Image)
 
-	cOpts, err := v.buildCheckOptsWithBundleDetection(ctx, attestor.Cosign, image)
+	cOpts, bundles, hash, err := v.buildCheckOptsWithBundleDetection(ctx, attestor.Cosign, image)
 	if err != nil {
 		err := errors.Wrapf(err, "failed to build cosign verification opts")
 		logger.Error(err, "image verification failed")
@@ -179,7 +272,13 @@ func (v *Verifier) VerifyAttestationSignature(ctx context.Context, image *imaged
 	// Attestations always use IntotoSubjectClaimVerifier
 	cOpts.ClaimVerifier = cosign.IntotoSubjectClaimVerifier
 
-	sigs, verified, err := cosign.VerifyImageAttestations(ctx, image.NameRef(), cOpts)
+	var sigs []oci.Signature
+	var verified bool
+	if cOpts.NewBundleFormat {
+		sigs, verified, err = verifyBundles(ctx, cOpts, bundles, hash)
+	} else {
+		sigs, verified, err = cosign.VerifyImageAttestations(ctx, image.NameRef(), cOpts)
+	}
 	if err != nil {
 		err := errors.Wrapf(err, "failed to verify cosign signatures")
 		logger.Error(err, "image verification failed")
