@@ -4,7 +4,14 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -22,6 +29,12 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/kyverno/api/api/policies.kyverno.io/v1beta1"
 	"github.com/kyverno/sdk/extensions/imagedataloader"
+	"github.com/sigstore/cosign/v3/pkg/cosign"
+	"github.com/sigstore/cosign/v3/pkg/oci/mutate"
+	ociremote "github.com/sigstore/cosign/v3/pkg/oci/remote"
+	ocistatic "github.com/sigstore/cosign/v3/pkg/oci/static"
+	"github.com/sigstore/sigstore/pkg/signature"
+	"github.com/sigstore/sigstore/pkg/signature/payload"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -140,11 +153,14 @@ func fetchTestImage(t *testing.T, ref string) *imagedataloader.ImageData {
 	return img
 }
 
-func Test_BundleDetection_DoesNotReadLayers(t *testing.T) {
+// Test_BundleDetection_OversizedBundleIsNotDetected covers a referrer whose blob is
+// tiny but inflates far past the read limit: detection must give up and report no
+// bundle rather than allocating the expansion or failing the request.
+func Test_BundleDetection_OversizedBundleIsNotDetected(t *testing.T) {
 	repo, blobGets := newBundleRegistry(t)
 	subject := pushSubject(t, repo, "subject")
-	payload := gzipPaddedBundle(t, 64<<20)
-	pushReferrer(t, repo, subject, payload, testBundleMediaType, testBundleMediaType)
+	blob := gzipPaddedBundle(t, 64<<20)
+	pushReferrer(t, repo, subject, blob, testBundleMediaType, testBundleMediaType)
 
 	img := fetchTestImage(t, repo.Tag("subject").String())
 	v := NewVerifier(nil, logr.Discard())
@@ -158,11 +174,12 @@ func Test_BundleDetection_DoesNotReadLayers(t *testing.T) {
 	require.NoError(t, err)
 
 	alloc := after.TotalAlloc - before.TotalAlloc
-	t.Logf("referrer blob is %d bytes; detection allocated %d bytes over %d blob GETs", len(payload), alloc, blobGets.Load())
+	t.Logf("referrer blob is %d bytes, inflates to >%d; detection allocated %d bytes over %d blob GETs", len(blob), 64<<20, alloc, blobGets.Load())
 
-	assert.True(t, cOpts.NewBundleFormat, "a bundle referrer must still be detected")
-	assert.Zero(t, blobGets.Load(), "detection must not fetch any layer blob")
-	assert.Less(t, alloc, uint64(8<<20), "detection must not allocate the bundle layer")
+	assert.False(t, cOpts.NewBundleFormat, "a bundle that cannot be read within the limit is not a v3 bundle")
+	// A bounded read is still one read; the point is that it stops at the limit.
+	assert.Equal(t, int64(1), blobGets.Load(), "detection must read the candidate layer exactly once")
+	assert.Less(t, alloc, uint64(64<<20), "detection must not allocate the inflated bundle")
 }
 
 func Test_BundleDetection_Positive(t *testing.T) {
@@ -215,4 +232,126 @@ func Test_BundleDetection_NegativeNonBundleReferrer(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, cOpts.NewBundleFormat)
 	assert.Zero(t, blobGets.Load())
+}
+
+// junkBundle has the bundle media type but content cosign cannot accept, which is
+// what anyone able to push a referrer into the repository can plant.
+const junkBundle = `{"not":"a bundle"}`
+
+// signV2 attaches a cosign v2 simple-signing signature for the image at ref and
+// returns the PEM public key an attestor needs to verify it.
+func signV2(t *testing.T, repo name.Repository, tag string) string {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	pubDER, err := x509.MarshalPKIXPublicKey(priv.Public())
+	require.NoError(t, err)
+	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
+
+	ref, err := name.ParseReference(repo.Tag(tag).String())
+	require.NoError(t, err)
+	se, err := ociremote.SignedEntity(ref)
+	require.NoError(t, err)
+	d, err := se.(interface{ Digest() (v1.Hash, error) }).Digest()
+	require.NoError(t, err)
+
+	payloadBytes, err := (&payload.Cosign{Image: repo.Digest(d.String())}).MarshalJSON()
+	require.NoError(t, err)
+	signer, err := signature.LoadECDSASignerVerifier(priv, crypto.SHA256)
+	require.NoError(t, err)
+	sig, err := signer.SignMessage(bytes.NewReader(payloadBytes))
+	require.NoError(t, err)
+
+	ociSig, err := ocistatic.NewSignature(payloadBytes, base64.StdEncoding.EncodeToString(sig))
+	require.NoError(t, err)
+	newSE, err := mutate.AttachSignatureToEntity(se, ociSig)
+	require.NoError(t, err)
+	require.NoError(t, ociremote.WriteSignatures(repo, newSE))
+	return string(pubPEM)
+}
+
+func keyAttestorFor(pubPEM string) *v1beta1.Cosign {
+	return &v1beta1.Cosign{
+		Key:   &v1beta1.Key{Data: pubPEM},
+		CTLog: &v1beta1.CTLog{InsecureIgnoreTlog: true},
+	}
+}
+
+// Test_V2SignedImage_WithPlantedBundleReferrer_IsAdmitted is the regression guard:
+// a referrer with the bundle media type but unusable content must not divert a
+// correctly v2-signed image onto the attestation path, which would deny it.
+func Test_V2SignedImage_WithPlantedBundleReferrer_IsAdmitted(t *testing.T) {
+	repo, _ := newBundleRegistry(t)
+	subject := pushSubject(t, repo, "subject")
+	pubPEM := signV2(t, repo, "subject")
+	pushReferrer(t, repo, subject, []byte(junkBundle), testBundleMediaType, testBundleMediaType)
+
+	img := fetchTestImage(t, repo.Tag("subject").String())
+	v := NewVerifier(nil, logr.Discard())
+	attestor := &v1beta1.Attestor{Name: "test", Cosign: keyAttestorFor(pubPEM)}
+
+	cOpts, err := v.buildCheckOptsWithBundleDetection(context.TODO(), attestor.Cosign, img)
+	require.NoError(t, err)
+	assert.False(t, cOpts.NewBundleFormat, "an unparseable bundle referrer must not be detected as v3")
+
+	require.NoError(t, v.VerifyImageSignature(context.TODO(), img, attestor),
+		"a v2-signed image with a planted bundle referrer must be admitted")
+}
+
+// detectionEquivalence asserts the detector and cosign.GetBundles agree on a fixture.
+func detectionEquivalence(t *testing.T, repo name.Repository, want bool) {
+	t.Helper()
+	img := fetchTestImage(t, repo.Tag("subject").String())
+	v := NewVerifier(nil, logr.Discard())
+	cOpts, err := v.buildCheckOptsWithBundleDetection(context.TODO(), bundleTestAttestor(), img)
+	require.NoError(t, err)
+
+	// GetBundles reports "none found" as ErrNoMatchingAttestations, not as success.
+	bundles, _, err := cosign.GetBundles(context.TODO(), img.NameRef(), cOpts.RegistryClientOpts)
+	var noneFound *cosign.ErrNoMatchingAttestations
+	if err != nil {
+		require.ErrorAs(t, err, &noneFound)
+	}
+	cosignSays := err == nil && len(bundles) > 0
+
+	t.Logf("detector=%v cosign.GetBundles=%v (want %v)", cOpts.NewBundleFormat, cosignSays, want)
+	assert.Equal(t, want, cOpts.NewBundleFormat, "detector disagrees with expectation")
+	assert.Equal(t, cosignSays, cOpts.NewBundleFormat, "detector disagrees with cosign.GetBundles")
+}
+
+func Test_BundleDetection_MatchesCosign_GenuineBundle(t *testing.T) {
+	repo, _ := newBundleRegistry(t)
+	subject := pushSubject(t, repo, "subject")
+	pushReferrer(t, repo, subject, []byte(validBundle), testBundleMediaType, testBundleMediaType)
+	detectionEquivalence(t, repo, true)
+}
+
+func Test_BundleDetection_MatchesCosign_JunkBundle(t *testing.T) {
+	repo, _ := newBundleRegistry(t)
+	subject := pushSubject(t, repo, "subject")
+	pushReferrer(t, repo, subject, []byte(junkBundle), testBundleMediaType, testBundleMediaType)
+	detectionEquivalence(t, repo, false)
+}
+
+func Test_BundleDetection_MatchesCosign_NoReferrers(t *testing.T) {
+	repo, _ := newBundleRegistry(t)
+	pushSubject(t, repo, "subject")
+	detectionEquivalence(t, repo, false)
+}
+
+func Test_BundleDetection_MatchesCosign_NonSigstoreReferrer(t *testing.T) {
+	repo, _ := newBundleRegistry(t)
+	subject := pushSubject(t, repo, "subject")
+	pushReferrer(t, repo, subject, []byte(`{}`), "application/vnd.in-toto+json", "application/vnd.in-toto+json")
+	detectionEquivalence(t, repo, false)
+}
+
+// Test_BundleDetection_MatchesCosign_GzippedBundle guards the only structural
+// difference between the two readers: ReadLayerLimited sniffs the compression
+// magic while cosign reads the layer uncompressed.
+func Test_BundleDetection_MatchesCosign_GzippedBundle(t *testing.T) {
+	repo, _ := newBundleRegistry(t)
+	subject := pushSubject(t, repo, "subject")
+	pushReferrer(t, repo, subject, gzipPaddedBundle(t, 0), testBundleMediaType, testBundleMediaType)
+	detectionEquivalence(t, repo, true)
 }

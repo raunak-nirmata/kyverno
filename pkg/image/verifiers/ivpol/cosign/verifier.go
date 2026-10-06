@@ -7,7 +7,9 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	policiesv1beta1 "github.com/kyverno/api/api/policies.kyverno.io/v1beta1"
+	"github.com/kyverno/kyverno/pkg/image/verifiers"
 	"github.com/kyverno/kyverno/pkg/logging"
 	"github.com/kyverno/sdk/extensions/imagedataloader"
 	"github.com/pkg/errors"
@@ -15,7 +17,10 @@ import (
 	"github.com/sigstore/cosign/v3/pkg/oci"
 	ociremote "github.com/sigstore/cosign/v3/pkg/oci/remote"
 	"github.com/sigstore/cosign/v3/pkg/policy"
+	protobundle "github.com/sigstore/protobuf-specs/gen/pb-go/bundle/v1"
+	sgbundle "github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore-go/pkg/root"
+	"google.golang.org/protobuf/encoding/protojson"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 )
 
@@ -51,10 +56,16 @@ func (v *Verifier) buildCheckOptsWithBundleDetection(ctx context.Context, attest
 // bundleLayerMediaTypePrefix identifies the layer of a cosign v3 sigstore bundle referrer.
 const bundleLayerMediaTypePrefix = "application/vnd.dev.sigstore.bundle"
 
+// maxBundleLayerSize bounds how many bundle bytes detection reads per referrer.
+const maxBundleLayerSize = int64(10 * 1000 * 1000) // 10 MB
+
 // hasNewBundleFormat reports whether a cosign v3 sigstore bundle is attached to
-// the image, deciding from the referrers index and referrer manifests alone so
-// that no unverified bundle layer is downloaded before verification starts.
-// Registry errors mean "not detected", matching the previous behaviour.
+// the image. Candidate referrers are selected from their manifests, then the
+// bundle layer is read through a size-bounded reader and accepted only if it
+// satisfies the same predicate cosign's ociremote.Bundle applies.
+// Anything that cannot be read or parsed within the limit is reported as "not a
+// bundle" so that a planted referrer cannot divert a v2-signed image, matching
+// the previous behaviour of skipping referrers cosign could not parse.
 func hasNewBundleFormat(ref name.Reference, registryClientOpts []ociremote.Option) bool {
 	digest, err := ociremote.ResolveDigest(ref, registryClientOpts...)
 	if err != nil {
@@ -89,12 +100,41 @@ func hasNewBundleFormat(ref name.Reference, registryClientOpts []ociremote.Optio
 		if len(manifest.Layers) != 1 {
 			continue
 		}
-		if strings.HasPrefix(string(manifest.Layers[0].MediaType), bundleLayerMediaTypePrefix) {
+		// Cheap manifest-level filter first, so non-bundle referrers are never read.
+		if !strings.HasPrefix(string(manifest.Layers[0].MediaType), bundleLayerMediaTypePrefix) {
+			continue
+		}
+		layers, err := img.Layers()
+		if err != nil || len(layers) != 1 {
+			continue
+		}
+		if isSigstoreBundleLayer(layers[0]) {
 			return true
 		}
 	}
 
 	return false
+}
+
+// isSigstoreBundleLayer applies cosign ociremote.Bundle's acceptance predicate to
+// a bounded read of the layer: protojson into a protobundle, sgbundle.NewBundle,
+// then MinVersion v0.3. Keeping these steps identical keeps detection and
+// verification in agreement.
+func isSigstoreBundleLayer(layer v1.Layer) bool {
+	bundleBytes, err := verifiers.ReadLayerLimited(layer, maxBundleLayerSize)
+	if err != nil {
+		return false
+	}
+	pb := &protobundle.Bundle{}
+	if err := protojson.Unmarshal(bundleBytes, pb); err != nil {
+		return false
+	}
+	// cosign passes o.BundleOpts here; this repo never sets any, so there are none.
+	b, err := sgbundle.NewBundle(pb)
+	if err != nil {
+		return false
+	}
+	return b.MinVersion("v0.3")
 }
 
 // shouldUseSignedTimestamps reports whether a detected Sigstore bundle (format
