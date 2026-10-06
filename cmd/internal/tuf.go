@@ -7,7 +7,6 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/kyverno/kyverno/pkg/sigstoretuf"
-	"github.com/sigstore/cosign/v3/pkg/blob"
 )
 
 func setupSigstoreTUF(ctx context.Context, logger logr.Logger) {
@@ -20,7 +19,7 @@ func setupSigstoreTUF(ctx context.Context, logger logr.Logger) {
 	var tufRootBytes []byte
 	var err error
 	if tufRoot != "" {
-		tufRootBytes, err = blob.LoadFileOrURL(tufRoot)
+		tufRootBytes, err = sigstoretuf.LoadFileOrURL(ctx, tufRoot)
 		if err != nil {
 			checkError(logger, err, fmt.Sprintf("Failed to read alternate TUF root file %s : %v", tufRoot, err))
 		}

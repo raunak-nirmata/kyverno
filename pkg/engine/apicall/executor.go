@@ -22,6 +22,7 @@ import (
 	"github.com/kyverno/kyverno/pkg/logging"
 	"github.com/kyverno/kyverno/pkg/toggle"
 	"github.com/kyverno/kyverno/pkg/tracing"
+	"github.com/kyverno/kyverno/pkg/utils/egress"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
@@ -461,56 +462,13 @@ func (p *egressPolicy) blockedCIDR(ip net.IP) *net.IPNet {
 	return nil
 }
 
-// embeddedIPv4 extracts the IPv4 address carried by an IPv6 address in a form that
-// net.IP.To4 does not recognise: IPv4-compatible (::a.b.c.d), the NAT64 well-known prefix
-// (64:ff9b::a.b.c.d), and 6to4 (2002:aabb:ccdd::). It returns nil when the address carries
-// no embedded IPv4 address, or when To4 already handles it.
-//
-// Each of these is a distinct spelling of an address that an IPv4 CIDR on the blocklist is
-// meant to cover. Without normalization, 64:ff9b::a9fe:a9fe reaches the metadata service
-// even though 169.254.169.254/32 is blocked. NAT64 is the form that matters in practice,
-// because it is standard in IPv6-only clusters; the other two are deprecated and need
-// specific routing, so they are defense in depth.
-//
-// The IPv4-compatible branch also matches low IPv6 addresses that were never meant as an
-// IPv4 encoding: ::1 yields 0.0.0.1, for example. That only ever widens the blocklist into
-// reserved space, so it is left as is.
-func embeddedIPv4(ip net.IP) net.IP {
-	if ip.To4() != nil || len(ip.To16()) != net.IPv6len {
-		return nil
-	}
-	ip = ip.To16()
-	isZero := func(b []byte) bool {
-		for _, c := range b {
-			if c != 0 {
-				return false
-			}
-		}
-		return true
-	}
-	// ::a.b.c.d — IPv4-compatible IPv6 (RFC 4291).
-	if isZero(ip[:12]) {
-		return net.IPv4(ip[12], ip[13], ip[14], ip[15])
-	}
-	// 64:ff9b::a.b.c.d — NAT64 well-known prefix (RFC 6052).
-	if ip[0] == 0x00 && ip[1] == 0x64 && ip[2] == 0xff && ip[3] == 0x9b && isZero(ip[4:12]) {
-		return net.IPv4(ip[12], ip[13], ip[14], ip[15])
-	}
-	// 2002:aabb:ccdd::/48 — 6to4 (RFC 3056), which carries the IPv4 address in bytes 2-5
-	// rather than at the end. 2002:a9fe:a9fe:: is 169.254.169.254.
-	if ip[0] == 0x20 && ip[1] == 0x02 {
-		return net.IPv4(ip[2], ip[3], ip[4], ip[5])
-	}
-	return nil
-}
+// embeddedIPv4 shares the IPv6 normalization used by registry and signature traffic.
+func embeddedIPv4(ip net.IP) net.IP { return egress.EmbeddedIPv4(ip) }
 
 const (
 	// dialTimeout bounds resolution and every connection attempt together, the way
 	// net.Dialer's own Timeout does for a caller that hands it a hostname.
 	dialTimeout = 30 * time.Second
-	// fallbackDelay is the head start the preferred address family gets before the other
-	// one is tried in parallel (RFC 6555). It matches net.Dialer's default.
-	fallbackDelay = 300 * time.Millisecond
 )
 
 func (p *egressPolicy) dialContext() func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -556,29 +514,9 @@ func (p *egressPolicy) dialContext() func(ctx context.Context, network, addr str
 		if len(targets) == 0 {
 			return nil, fmt.Errorf("no usable addresses resolved for %s", host)
 		}
-		// Every dial below targets an address that was just validated rather than the
-		// hostname, so a second resolution cannot substitute a different one (DNS
-		// rebinding).
-		//
-		// Split by family and race the two groups the way net.Dialer does, rather than
-		// walking one flat list. Trying every address of the preferred family first makes
-		// a dual-stack Service whose AAAA is present but not listening wait out the whole
-		// IPv6 side before reaching IPv4; the stock dialer starts the other family after
-		// fallbackDelay instead. lookupHost returns addresses in RFC 6724 preference
-		// order, so the first one names the preferred family.
-		preferIPv4 := targets[0].To4() != nil
-		var primary, fallback []net.IP
-		for _, ip := range targets {
-			if (ip.To4() != nil) == preferIPv4 {
-				primary = append(primary, ip)
-			} else {
-				fallback = append(fallback, ip)
-			}
-		}
-		if len(fallback) == 0 {
-			return dialSeries(ctx, base, network, port, primary)
-		}
-		return dialRace(ctx, base, network, port, primary, fallback)
+		return egress.DialAddresses(ctx, func(ctx context.Context, network, address string) (net.Conn, error) {
+			return dialTCP(ctx, base, network, address)
+		}, network, port, targets)
 	}
 }
 
@@ -588,86 +526,6 @@ func (p *egressPolicy) dialContext() func(ctx context.Context, network, addr str
 // any host where those addresses fail fast.
 var dialTCP = func(ctx context.Context, d *net.Dialer, network, addr string) (net.Conn, error) {
 	return d.DialContext(ctx, network, addr)
-}
-
-// dialSeries tries each address in turn and returns the first connection that succeeds.
-func dialSeries(ctx context.Context, d *net.Dialer, network, port string, ips []net.IP) (net.Conn, error) {
-	var lastErr error
-	for _, ip := range ips {
-		conn, err := dialTCP(ctx, d, network, net.JoinHostPort(ip.String(), port))
-		if err == nil {
-			return conn, nil
-		}
-		lastErr = err
-		if ctx.Err() != nil {
-			break
-		}
-	}
-	if lastErr == nil {
-		lastErr = errors.New("no addresses to dial")
-	}
-	return nil, lastErr
-}
-
-type dialOutcome struct {
-	conn      net.Conn
-	err       error
-	isPrimary bool
-}
-
-// dialRace runs the two address families concurrently, giving the preferred one a
-// fallbackDelay head start, and returns the first connection to succeed (RFC 6555).
-func dialRace(ctx context.Context, d *net.Dialer, network, port string, primary, fallback []net.IP) (net.Conn, error) {
-	ctx, cancel := context.WithCancel(ctx)
-	// Cancelling on return tears down the losing attempt. A connection already returned is
-	// unaffected: net.Dialer does not tie a live conn to the dial context.
-	defer cancel()
-
-	// Buffered, so a loser that finishes after we have returned never blocks on send.
-	outcomes := make(chan dialOutcome, 2)
-	race := func(ips []net.IP, isPrimary bool, delay time.Duration) {
-		go func() {
-			if delay > 0 {
-				timer := time.NewTimer(delay)
-				defer timer.Stop()
-				select {
-				case <-timer.C:
-				case <-ctx.Done():
-					outcomes <- dialOutcome{err: ctx.Err(), isPrimary: isPrimary}
-					return
-				}
-			}
-			conn, err := dialSeries(ctx, d, network, port, ips)
-			outcomes <- dialOutcome{conn: conn, err: err, isPrimary: isPrimary}
-		}()
-	}
-	race(primary, true, 0)
-	race(fallback, false, fallbackDelay)
-
-	var firstErr error
-	for i := 0; i < 2; i++ {
-		out := <-outcomes
-		if out.err == nil {
-			// Drain the sibling so a connection that lands after this point is closed
-			// rather than leaked.
-			if remaining := 1 - i; remaining > 0 {
-				go func(n int) {
-					for j := 0; j < n; j++ {
-						if late := <-outcomes; late.conn != nil {
-							late.conn.Close()
-						}
-					}
-				}(remaining)
-			}
-			return out.conn, nil
-		}
-		// Prefer the primary family's error: it describes the address the caller would
-		// have reached without this guard.
-		if firstErr == nil || out.isPrimary {
-			firstErr = out.err
-		}
-	}
-	return nil, firstErr
 }
 
 func hostKey(h string) string {

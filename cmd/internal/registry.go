@@ -7,14 +7,14 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/kyverno/kyverno/pkg/config"
-	"github.com/kyverno/sdk/extensions/registryclient"
+	"github.com/kyverno/kyverno/pkg/registryclient"
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 )
 
 func setupRegistryClient(ctx context.Context, logger logr.Logger, client kubernetes.Interface) (registryclient.Client, corev1listers.SecretLister) {
-	logger = logger.WithName("registry-client").WithValues("secrets", imagePullSecrets, "insecure", allowInsecureRegistry)
+	logger = logger.WithName("registry-client").WithValues("secrets", imagePullSecrets, "insecure", allowInsecureRegistry, "privateAllowlist", privateRegistryAllowlist, "privateEgressMode", privateRegistryEgressMode)
 	logger.V(2).Info("setup registry client...")
 	ms := &multiLister{
 		listersMap: make(map[string]corev1listers.SecretLister),
@@ -38,7 +38,7 @@ func setupRegistryClient(ctx context.Context, logger logr.Logger, client kuberne
 
 	registryClient := registryclient.SetupGlobalRegistryClient(ms, config.KyvernoNamespace(),
 		imagePullSecrets,
-		registryCredentialHelpers, allowInsecureRegistry)
+		registryCredentialHelpers, allowInsecureRegistry, privateRegistryAllowlist, privateRegistryEgressMode)
 
 	return registryClient, ms
 }
@@ -51,4 +51,12 @@ func parseSecretReference(secretRef string, defaultNamespace string) (namespace 
 		return parts[0], parts[1]
 	}
 	return defaultNamespace, secretRef
+}
+
+func validateRegistryClientConfig(allowlist, mode string) error {
+	var entries []string
+	if allowlist != "" {
+		entries = strings.Split(allowlist, ",")
+	}
+	return registryclient.ValidateEgressConfig(entries, mode)
 }

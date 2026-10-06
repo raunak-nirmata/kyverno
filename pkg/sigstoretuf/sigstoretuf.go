@@ -1,131 +1,356 @@
-// Package sigstoretuf provides a single, process-wide synchronization point
-// for every Kyverno code path that reads from or (re)initializes the shared
-// sigstore TUF client singleton (github.com/sigstore/sigstore/pkg/tuf).
-//
-// # Background
-//
-// The sigstore/tuf package keeps one process-wide singleton TUF client and
-// guards its own initialization routine (tuf.Initialize / tuf.NewFromEnv)
-// with an internal package-level mutex. However, once the singleton exists,
-// operations that refresh its cached metadata/targets (triggered from
-// Initialize/NewFromEnv when the local cache is missing or expired) mutate
-// internal maps on the *TUF value without holding *that* value's own mutex,
-// while read paths such as GetTarget/GetTargetsByMeta *do* take the
-// instance-level lock. Because these are two independent locks, concurrent
-// calls into the TUF client from different goroutines can still race on the
-// same underlying maps, producing a `fatal error: concurrent map writes`
-// panic that crashes the whole process (see
-// https://github.com/kyverno/kyverno/issues/15983).
-//
-// Every helper in cosign/sigstore-go that ends up touching the shared TUF
-// singleton -- cosign.GetRekorPubs, cosign.GetCTLogPubs,
-// fulcioroots.Get/GetIntermediates, and fetching "trusted_root.json" -- is
-// susceptible to the same race, and is used by both the ImageValidatingPolicy
-// (IVPOL) and ClusterPolicy (CPOL) cosign verifiers, as well as the one-shot
-// TUF bootstrap performed by the admission/background/reports controllers on
-// startup.
-//
-// Rather than re-implementing ad hoc, per-package mutexes (which only
-// protect callers within that one package), this package centralizes the
-// lock so IVPOL, CPOL and the CLI/controller bootstrap code all serialize
-// through the same critical section. Callers should keep the locked region
-// as small as possible: only the actual sigstore/cosign calls need to be
-// inside the lock, not unrelated I/O such as registry pulls or Rekor client
-// construction.
+// Package sigstoretuf loads Sigstore trust material through clients protected by
+// Kyverno's egress policy. A process-wide lock serializes shared TUF cache access;
+// policy-supplied mirrors use independent clients and cannot replace the
+// controller's default trust configuration.
 package sigstoretuf
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
 	"sync"
 
+	"github.com/kyverno/kyverno/pkg/registryclient"
 	"github.com/sigstore/cosign/v3/pkg/cosign"
 	"github.com/sigstore/sigstore-go/pkg/root"
-	"github.com/sigstore/sigstore/pkg/fulcioroots"
-	"github.com/sigstore/sigstore/pkg/tuf"
+	"github.com/sigstore/sigstore-go/pkg/tuf"
+	"github.com/sigstore/sigstore/pkg/cryptoutils"
+	legacytuf "github.com/sigstore/sigstore/pkg/tuf"
+	"github.com/theupdateframework/go-tuf/v2/metadata/config"
+	"github.com/theupdateframework/go-tuf/v2/metadata/fetcher"
+	"github.com/theupdateframework/go-tuf/v2/metadata/updater"
 )
 
-// mu serializes every access to the shared sigstore TUF singleton across the
-// whole process (IVPOL, CPOL and CLI/controller bootstrap).
-var mu sync.Mutex
+var (
+	mu            sync.Mutex
+	defaultMirror string
+	defaultRoot   []byte
+)
 
-// Initialize (re)initializes the shared sigstore TUF client with the given
-// mirror and trusted root, forcing a refresh of local metadata/targets. It
-// must be used instead of calling tuf.Initialize directly so that concurrent
-// initializations (e.g. triggered by concurrent IVPOL/CPOL verifications)
-// cannot race with each other or with TrustedRoot/RekorPublicKeys/
-// CTLogPublicKeys/FulcioRoots below.
+// Initialize validates the controller's configured TUF repository before
+// retaining it as the default. No global HTTP clients or transports are changed.
 func Initialize(ctx context.Context, mirror string, rootBytes []byte) error {
 	mu.Lock()
 	defer mu.Unlock()
-	return tuf.Initialize(ctx, mirror, rootBytes)
+	if _, err := newTUFClient(ctx, mirror, rootBytes, false); err != nil {
+		return err
+	}
+	defaultMirror = mirror
+	defaultRoot = append([]byte(nil), rootBytes...)
+	return nil
 }
 
-// TrustedRoot returns the "trusted_root.json" target from the shared TUF
-// client, initializing it from the local cache/environment if needed.
+// TrustedRoot returns the default repository's trusted_root.json target.
 func TrustedRoot(ctx context.Context) (*root.TrustedRoot, error) {
 	mu.Lock()
 	defer mu.Unlock()
-
-	tufClient, err := tuf.NewFromEnv(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("initializing tuf: %w", err)
-	}
-	targetBytes, err := tufClient.GetTarget("trusted_root.json")
-	if err != nil {
-		return nil, fmt.Errorf("error getting target trusted_root.json: %w", err)
-	}
-	trustedRoot, err := root.NewTrustedRootFromJSON(targetBytes)
-	if err != nil {
-		return nil, fmt.Errorf("error creating trusted root: %w", err)
-	}
-	return trustedRoot, nil
+	return trustedRoot(ctx, defaultMirror, defaultRoot, false)
 }
 
-// RekorPublicKeys returns the trusted Rekor public keys from the shared TUF
-// client (or the alternate key configured via the
-// SIGSTORE_REKOR_PUBLIC_KEY env var, see cosign.GetRekorPubs).
+// TrustedRootFor loads a policy's TUF repository without changing the default
+// repository. The modern client supports delegated and succinct-role targets.
+func TrustedRootFor(ctx context.Context, mirror string, rootBytes []byte) (*root.TrustedRoot, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	return trustedRoot(ctx, mirror, rootBytes, mirror != "" || len(rootBytes) != 0)
+}
+
+func trustedRoot(ctx context.Context, mirror string, rootBytes []byte, isolate bool) (*root.TrustedRoot, error) {
+	client, err := newTUFClientWithHTTP(ctx, mirror, rootBytes, true, registryclient.EgressHTTPClient(), isolate)
+	if err != nil {
+		return nil, fmt.Errorf("initializing TUF: %w", err)
+	}
+	target, err := client.GetTarget("trusted_root.json")
+	if err != nil {
+		return nil, fmt.Errorf("getting trusted_root.json from TUF: %w", err)
+	}
+	return root.NewTrustedRootFromJSON(target)
+}
+
+func newTUFClient(ctx context.Context, mirror string, rootBytes []byte, useCache bool) (*tuf.Client, error) {
+	return newTUFClientWithHTTP(ctx, mirror, rootBytes, useCache, registryclient.EgressHTTPClient(), false)
+}
+
+func newTUFClientWithHTTP(ctx context.Context, mirror string, rootBytes []byte, useCache bool, httpClient *http.Client, isolate bool) (*tuf.Client, error) {
+	opts, err := tufOptions(ctx, mirror, rootBytes, useCache, httpClient, isolate)
+	if err != nil {
+		return nil, err
+	}
+	return tuf.New(opts)
+}
+
+func tufOptions(ctx context.Context, mirror string, rootBytes []byte, useCache bool, httpClient *http.Client, isolate bool) (*tuf.Options, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f := fetcher.NewDefaultFetcher()
+	f.SetHTTPClient(contextHTTPClient(func(req *http.Request) (*http.Response, error) {
+		return httpClient.Do(req.WithContext(ctx)) //nolint:gosec // The injected transport validates and pins every network destination.
+	}))
+	opts := tuf.DefaultOptions().WithContext(ctx).WithFetcher(f)
+	if mirror != "" {
+		opts.RepositoryBaseURL = mirror
+	}
+	if len(rootBytes) != 0 {
+		opts.Root = rootBytes
+	}
+	if cacheRoot := os.Getenv(legacytuf.TufRootEnv); cacheRoot != "" {
+		opts.CachePath = cacheRoot
+	}
+	if useCache {
+		opts.WithForceCache()
+	}
+	// A policy trust anchor must never read or overwrite another policy's
+	// cache, including the operator's cache for the same mirror URL.
+	disableCache, _ := strconv.ParseBool(os.Getenv(legacytuf.SigstoreNoCache))
+	if isolate || disableCache {
+		opts.WithDisableLocalCache()
+	}
+	if !isolate {
+		mirrorURL, err := url.Parse(opts.RepositoryBaseURL)
+		if err != nil {
+			return nil, err
+		}
+		if mirrorURL.Scheme == "file" {
+			opts.Fetcher = localFetcher(ctx, mirrorURL)
+		}
+	}
+	return opts, nil
+}
+
+// legacyTUFClient exposes authenticated top-level target metadata for legacy Sigstore
+// usage tags, while retaining go-tuf/v2 support for delegated targets.
+type legacyTUFClient struct {
+	*updater.Updater
+}
+
+func newUpdaterClient(opts *tuf.Options) (*legacyTUFClient, error) {
+	cfg, err := config.New(opts.RepositoryBaseURL, opts.Root)
+	if err != nil {
+		return nil, err
+	}
+	cfg.LocalMetadataDir = filepath.Join(opts.CachePath, tuf.URLToPath(opts.RepositoryBaseURL))
+	cfg.LocalTargetsDir = filepath.Join(cfg.LocalMetadataDir, "targets")
+	cfg.DisableLocalCache = opts.DisableLocalCache
+	cfg.Fetcher = opts.Fetcher
+	cfg.PrefixTargetsWithHash = !opts.DisableConsistentSnapshot
+	if opts.ForceCache && !opts.DisableLocalCache {
+		// As in sigstore-go, reuse only complete, authenticated, unexpired
+		// metadata. Missing or expired metadata requires a guarded refresh.
+		local := *cfg
+		local.UnsafeLocalMode = true
+		cached, err := updater.New(&local)
+		if err == nil && cached.Refresh() == nil {
+			return &legacyTUFClient{cached}, nil
+		}
+	}
+	client, err := updater.New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := client.Refresh(); err != nil {
+		return nil, err
+	}
+	return &legacyTUFClient{client}, nil
+}
+
+func (c *legacyTUFClient) GetTarget(name string) ([]byte, error) {
+	target, err := c.GetTargetInfo(name)
+	if err != nil {
+		return nil, err
+	}
+	path, data, err := c.FindCachedTarget(target, "")
+	if err != nil {
+		return nil, err
+	}
+	if path != "" {
+		return data, nil
+	}
+	_, data, err = c.DownloadTarget(target, "", "")
+	return data, err
+}
+
+// The TUF fetcher otherwise creates requests with context.Background(). Carry
+// the verification deadline through every metadata and target download.
+type contextHTTPClient func(*http.Request) (*http.Response, error)
+
+func (c contextHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	return c(req)
+}
+
+// RekorPublicKeys returns keys from the default trust root, preserving the
+// operator-configured local SIGSTORE_REKOR_PUBLIC_KEY override.
 func RekorPublicKeys(ctx context.Context) (*cosign.TrustedTransparencyLogPubKeys, error) {
-	mu.Lock()
-	defer mu.Unlock()
-	return cosign.GetRekorPubs(ctx)
+	if file := os.Getenv("SIGSTORE_REKOR_PUBLIC_KEY"); file != "" {
+		return publicKeysFromFile(file)
+	}
+	if keys, err := publicKeysFromTarget(ctx, legacytuf.Rekor, "rekor.pub"); err == nil {
+		return keys, nil
+	}
+	tr, err := TrustedRoot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return RekorKeysFromTrustedRoot(tr)
 }
 
-// CTLogPublicKeys returns the trusted CTLog public keys from the shared TUF
-// client (see cosign.GetCTLogPubs).
+// CTLogPublicKeys returns keys from the default trust root, preserving the
+// operator-configured local SIGSTORE_CT_LOG_PUBLIC_KEY_FILE override.
 func CTLogPublicKeys(ctx context.Context) (*cosign.TrustedTransparencyLogPubKeys, error) {
-	mu.Lock()
-	defer mu.Unlock()
-	return cosign.GetCTLogPubs(ctx)
+	if file := os.Getenv("SIGSTORE_CT_LOG_PUBLIC_KEY_FILE"); file != "" {
+		return publicKeysFromFile(file)
+	}
+	if keys, err := publicKeysFromTarget(ctx, legacytuf.CTFE, "ctfe.pub"); err == nil {
+		return keys, nil
+	}
+	tr, err := TrustedRoot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return CTLogKeysFromTrustedRoot(tr)
 }
 
-// FulcioRoots returns the Fulcio root and intermediate certificate pools
-// sourced from the shared TUF client (see fulcioroots.Get/GetIntermediates).
+func publicKeysFromFile(file string) (*cosign.TrustedTransparencyLogPubKeys, error) {
+	data, err := os.ReadFile(file) //nolint:gosec // The path is an operator-configured local key override, never policy input.
+	if err != nil {
+		return nil, err
+	}
+	keys := cosign.NewTrustedTransparencyLogPubKeys()
+	if err := keys.AddTransparencyLogPubKey(data, legacytuf.Active); err != nil {
+		return nil, err
+	}
+	return &keys, nil
+}
+
+// FulcioRoots returns root and intermediate certificates from the default trust
+// root. It does not use Sigstore's unguarded global TUF singleton.
 func FulcioRoots() (*x509.CertPool, *x509.CertPool, error) {
-	mu.Lock()
-	defer mu.Unlock()
-	roots, err := fulcioroots.Get()
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to fetch Fulcio roots: %w", err)
-	}
-	intermediates, err := fulcioroots.GetIntermediates()
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to fetch Fulcio intermediates: %w", err)
-	}
-	return roots, intermediates, nil
+	return FulcioRootsWithContext(context.Background())
 }
 
-// WithLock holds the process-wide TUF mutex for the duration of fn.
-// fn MUST NOT call any exported sigstoretuf function (Initialize,
-// TrustedRoot, RekorPublicKeys, CTLogPublicKeys, FulcioRoots) as those
-// all acquire the same non-reentrant mutex, which would deadlock.
-// Use WithLock when a sequence of TUF operations must be atomic — for
-// example, initializing a custom mirror and immediately reading trust
-// material from it, with no risk of another goroutine reinitializing the
-// singleton in between.
+// FulcioRootsWithContext preserves the caller's verification deadline while
+// retaining historical CAs needed to validate certificates at signing time.
+func FulcioRootsWithContext(ctx context.Context) (*x509.CertPool, *x509.CertPool, error) {
+	if roots, intermediates, err := fulcioRootsFromTargets(ctx); err == nil {
+		return roots, intermediates, nil
+	}
+	tr, err := TrustedRoot(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return fulcioRootsFromTrustedRoot(tr, false)
+}
+
+// WithLock serializes access to the shared TUF cache. The callback must not call
+// another function in this package that acquires the same lock.
 func WithLock(fn func() error) error {
 	mu.Lock()
 	defer mu.Unlock()
 	return fn()
+}
+
+// defaultTargets preserves legacy repositories that publish individual PEM
+// targets instead of trusted_root.json, using the same guarded TUF client.
+func defaultTargets(ctx context.Context, usage legacytuf.UsageKind, names ...string) ([]legacytuf.TargetFile, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	opts, err := tufOptions(ctx, defaultMirror, defaultRoot, true, registryclient.EgressHTTPClient(), false)
+	if err != nil {
+		return nil, err
+	}
+	client, err := newUpdaterClient(opts)
+	if err != nil {
+		return nil, err
+	}
+	return targetsFromClient(client, usage, names...)
+}
+
+func targetsFromClient(client *legacyTUFClient, usage legacytuf.UsageKind, names ...string) ([]legacytuf.TargetFile, error) {
+	var targets []legacytuf.TargetFile
+	for name, info := range client.GetTopLevelTargets() {
+		if info.Custom == nil {
+			continue
+		}
+		var custom struct {
+			Sigstore struct {
+				Usage  legacytuf.UsageKind  `json:"usage"`
+				Status legacytuf.StatusKind `json:"status"`
+			} `json:"sigstore"`
+		}
+		if err := json.Unmarshal(*info.Custom, &custom); err != nil || custom.Sigstore.Usage != usage {
+			continue
+		}
+		target, err := client.GetTarget(name)
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, legacytuf.TargetFile{Name: name, Target: target, Status: custom.Sigstore.Status})
+	}
+	if len(targets) != 0 {
+		return targets, nil
+	}
+	var lastErr error
+	for _, name := range names {
+		target, err := client.GetTarget(name)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		targets = append(targets, legacytuf.TargetFile{Name: name, Target: target, Status: legacytuf.Active})
+	}
+	if len(targets) == 0 {
+		return nil, lastErr
+	}
+	return targets, nil
+}
+
+func publicKeysFromTarget(ctx context.Context, usage legacytuf.UsageKind, name string) (*cosign.TrustedTransparencyLogPubKeys, error) {
+	targets, err := defaultTargets(ctx, usage, name)
+	if err != nil {
+		return nil, err
+	}
+	return publicKeysFromTargets(targets)
+}
+
+func publicKeysFromTargets(targets []legacytuf.TargetFile) (*cosign.TrustedTransparencyLogPubKeys, error) {
+	keys := cosign.NewTrustedTransparencyLogPubKeys()
+	for _, target := range targets {
+		if err := keys.AddTransparencyLogPubKey(target.Target, target.Status); err != nil {
+			return nil, err
+		}
+	}
+	return &keys, nil
+}
+
+func fulcioRootsFromTargets(ctx context.Context) (*x509.CertPool, *x509.CertPool, error) {
+	targets, err := defaultTargets(ctx, legacytuf.Fulcio, "fulcio.crt.pem", "fulcio_v1.crt.pem", "fulcio_intermediate_v1.crt.pem")
+	if err != nil {
+		return nil, nil, err
+	}
+	return fulcioRootsFromTargetFiles(targets)
+}
+
+func fulcioRootsFromTargetFiles(targets []legacytuf.TargetFile) (*x509.CertPool, *x509.CertPool, error) {
+	roots, intermediates := x509.NewCertPool(), x509.NewCertPool()
+	for _, target := range targets {
+		certs, err := cryptoutils.UnmarshalCertificatesFromPEM(target.Target)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, cert := range certs {
+			if bytes.Equal(cert.RawSubject, cert.RawIssuer) {
+				roots.AddCert(cert)
+			} else {
+				intermediates.AddCert(cert)
+			}
+		}
+	}
+	return roots, intermediates, nil
 }

@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "tag_scanned": "v1.19.2-n4k.nirmata.1",
+  "release_branch": "release-1.19-n4k",
+  "generated_at": "2026-10-06T00:00:00Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-gghj-wcpm-cchr",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "< 1.19.2",
+      "fixed": "1.19.2",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "Policy-controlled registry and Sigstore HTTP destinations now share an egress guard that validates every resolved address, pins direct connections, revalidates redirects and pooled requests, and blocks metadata, loopback, link-local, unspecified, multicast, and broadcast destinations before network access or registry credential lookup. Audit mode is the patch-release default and still permits ordinary private networks; operators must select privateRegistryEgressMode=enforce to restrict those networks using exact host, IP, or CIDR entries in privateRegistryAllowlist. Exemptions never bypass hard blocks. Operator-configured proxies are validated separately and remain responsible for downstream DNS and egress controls. The guard covers registry token services, Rekor, CT log, TUF mirror/root, and public key URLs, with shared connection pools and context-bound DNS and dialing. Initial fix 8b61e782a; review hardening on this branch as 85c8d29e725b. Fix PR: https://github.com/nirmata/enterprise-kyverno/pull/1147. Follow-up verification on this branch as af68779f850701d04af6172b0e5440655735706c restores IVPOL operator key overrides and authenticated legacy/historical TUF trust, preserves aggregate-deadline fallback within an address family, and routes legacy validate.manifests registry, Rekor, and HTTP key/certificate loads through the same guard with digest-pinned image verification and full signature/certificate/bundle validation. KMS key references retain provider SDK networking. Registry flags are configured only on admission, background, and reports controllers; cleanup receives no unsupported registry flags."
+    },
+    {
+      "id": "GHSA-68v8-7j3j-8995",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "< 1.19.2",
+      "fixed": "1.19.2",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "CEL HTTP destination checks could treat alternate address encodings differently from their canonical destination. The release branch includes canonical embedded-address handling and CIDR-based metadata protection from the SDK and controller backports (47c83c601 and 3fdd28ede); the integrated CEL path now has explicit regression coverage for mapped, compatible, NAT64, and 6to4 forms (8b61e782a). Integrated regression PR: https://github.com/nirmata/enterprise-kyverno/pull/1147."
+    }
+  ]
+}

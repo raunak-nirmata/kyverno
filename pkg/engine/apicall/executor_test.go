@@ -704,9 +704,9 @@ func withStubDialer(t *testing.T, fn func(ctx context.Context, d *net.Dialer, ne
 	t.Cleanup(func() { dialTCP = original })
 }
 
-// Resolution and every connection attempt run under one deadline. Previously each address
-// carried its own, so a name answering with many black-holed addresses could hold an
-// admission request for dialTimeout per address.
+// Resolution and all connection attempts share one outer deadline. Each address gets
+// a portion of the remaining budget so an unreachable address leaves time for fallback.
+// Per-address deadlines must never extend the original apiCall budget.
 //
 // The assertion is on the context handed to each attempt, not on elapsed time. A timing
 // test would need addresses that hang rather than fail, and on any host without an IPv6
@@ -714,7 +714,11 @@ func withStubDialer(t *testing.T, fn func(ctx context.Context, d *net.Dialer, ne
 // against the per-address-timeout code it is meant to catch.
 func Test_DialContext_DeadlineIsSharedAcrossAttempts(t *testing.T) {
 	// Same family throughout, so this exercises dialSeries rather than the race.
-	withStubResolver(t, resolvesTo("192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4"))
+	var resolutionDeadline time.Time
+	withStubResolver(t, func(ctx context.Context, _ string) ([]string, error) {
+		resolutionDeadline, _ = ctx.Deadline()
+		return []string{"192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4"}, nil
+	})
 
 	var deadlines []time.Time
 	withStubDialer(t, func(ctx context.Context, _ *net.Dialer, _, addr string) (net.Conn, error) {
@@ -732,12 +736,18 @@ func Test_DialContext_DeadlineIsSharedAcrossAttempts(t *testing.T) {
 	assert.Assert(t, err != nil)
 
 	assert.Equal(t, len(deadlines), 4, "every resolved address must be attempted")
-	for i, d := range deadlines {
-		assert.Assert(t, d.Sub(deadlines[0]).Abs() < time.Millisecond,
-			"attempt %d must share the first attempt's deadline, not start a new one", i)
+	for i, deadline := range deadlines {
+		assert.Assert(t, !deadline.After(resolutionDeadline), "attempt %d must stay inside the DNS deadline", i)
+		if i < len(deadlines)-1 {
+			assert.Assert(t, deadline.Before(deadlines[i+1]), "attempt %d must leave time for later candidates", i)
+		}
 	}
-	// One dialTimeout from the start of the dial, not one per address.
-	assert.Assert(t, deadlines[0].Sub(before.Add(dialTimeout)).Abs() < time.Second)
+	// Immediate failures leave almost all of the aggregate budget available. The
+	// first address receives one quarter and the final address gets the remainder.
+	assert.Assert(t, deadlines[0].Sub(before.Add(7500*time.Millisecond)).Abs() < time.Second)
+	assert.Equal(t, deadlines[len(deadlines)-1], resolutionDeadline)
+	// Preserve apiCall's 30-second budget independently of the registry dial budget.
+	assert.Assert(t, resolutionDeadline.Sub(before.Add(30*time.Second)).Abs() < time.Second)
 }
 
 // The shared deadline must not extend one the caller already set.

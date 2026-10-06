@@ -16,7 +16,6 @@ import (
 	"github.com/kyverno/kyverno/pkg/sigstoretuf"
 	"github.com/kyverno/kyverno/pkg/utils/data"
 	"github.com/pkg/errors"
-	sigs "github.com/sigstore/cosign/v3/pkg/signature"
 	"github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/verify"
@@ -230,7 +229,7 @@ func buildKeyTrustedMaterial(ctx context.Context, key, algorithm string) (root.T
 	if strings.Contains(key, "PUBLIC KEY") {
 		verifier, err = decodePEM([]byte(key), hashAlgorithm)
 	} else {
-		verifier, err = sigs.PublicKeyFromKeyRefWithHashAlgo(ctx, key, hashAlgorithm)
+		verifier, err = sigstoretuf.PublicKeyFromKeyRefWithHashAlgo(ctx, key, hashAlgorithm)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to load public key: %w", err)

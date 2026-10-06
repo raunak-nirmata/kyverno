@@ -135,10 +135,19 @@ func TestHTTPContextSeparation(t *testing.T) {
 		ctx := NewLazyCELHTTPContext("")
 		require.NotNil(t, ctx)
 
-		// Metadata services should be blocked for all policy scopes.
-		_, err := ctx.Get("http://169.254.169.254", nil)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "blocked")
+		// Metadata services should be blocked for all policy scopes, including
+		// alternate IPv6 spellings which embed the same IPv4 destination.
+		for _, target := range []string{
+			"http://169.254.169.254",
+			"http://[::ffff:169.254.169.254]",
+			"http://[::169.254.169.254]",
+			"http://[64:ff9b::a9fe:a9fe]",
+			"http://[2002:a9fe:a9fe::]",
+		} {
+			_, err := ctx.Get(target, nil)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "blocked")
+		}
 	})
 }
 

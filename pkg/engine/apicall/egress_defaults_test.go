@@ -31,6 +31,12 @@ func Test_ExecuteServiceCall_BlocksUnspecifiedAddressByDefault(t *testing.T) {
 	for _, host := range []string{"0.0.0.0", "0", "[::]"} {
 		t.Run(host, func(t *testing.T) {
 			gotHit = false
+			if host == "0" {
+				// libc accepts this shorthand for the unspecified address, but
+				// Go's pure resolver may reject it. Exercise the resolved address
+				// check without relying on the host's resolver implementation.
+				withStubResolver(t, resolvesTo("0.0.0.0"))
+			}
 			_, err := testExecutor().Execute(context.Background(), getServiceCall("http://"+host+":"+port+"/"))
 			assert.ErrorContains(t, err, "blocked")
 			assert.Assert(t, !gotHit)
