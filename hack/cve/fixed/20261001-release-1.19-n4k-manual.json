@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "tag_scanned": "none",
+  "release_branch": "release-1.19-n4k",
+  "generated_at": "2026-10-01T06:13:41Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-493q-9xvg-9xf3",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "1.19.x on release-1.19-n4k before 3689c792f4f5699821de5850481bd185a4964fcf",
+      "fixed": "unreleased (release-1.19-n4k)",
+      "images": [
+        "background-controller"
+      ],
+      "notes": "Namespaced legacy generate policies could access clone sources outside their namespace when evaluated without current admission checks. Runtime validation confines resolved clone and cloneList sources to namespaced kinds in the policy namespace, including foreach. This records the release-1.19-n4k code fix for the 1.19.2 security workstream; no patched enterprise tag or public release is asserted. Hold docs publication until advisory disclosure. Fixed by commit 3689c792f4f5699821de5850481bd185a4964fcf"
+    }
+  ]
+}

@@ -19,6 +19,7 @@ import (
 	"github.com/kyverno/kyverno/pkg/engine/jmespath"
 	imageverifycache "github.com/kyverno/kyverno/pkg/image/verification/cache"
 	kubeutils "github.com/kyverno/kyverno/pkg/utils/kube"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -115,7 +116,16 @@ func initializeMockController(out io.Writer, s *store.Store, gvrToListKind map[s
 		gvk := object.GetObjectKind().GroupVersionKind()
 		gvrs.Insert(gvk.GroupVersion().WithResource(strings.ToLower(gvk.Kind) + "s"))
 	}
-	client.SetDiscovery(dclient.NewFakeDiscoveryClient(gvrs.UnsortedList()))
+	discovery := dclient.NewFakeDiscoveryClient(gvrs.UnsortedList())
+	for _, object := range objects {
+		metadata, err := meta.Accessor(object)
+		if err != nil {
+			return nil, fmt.Errorf("failed to determine fixture scope: %w", err)
+		}
+		gvk := object.GetObjectKind().GroupVersionKind()
+		discovery.SetResourceScope(gvk.GroupVersion().WithResource(strings.ToLower(gvk.Kind)+"s"), metadata.GetNamespace() != "")
+	}
+	client.SetDiscovery(discovery)
 	cfg := config.NewDefaultConfiguration(false)
 	c := generate.NewGenerateControllerWithOnlyClient(client, engine.NewEngine(
 		cfg,
