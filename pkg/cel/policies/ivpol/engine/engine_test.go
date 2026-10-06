@@ -7,6 +7,7 @@ import (
 
 	policieskyvernoio "github.com/kyverno/api/api/policies.kyverno.io"
 	policiesv1beta1 "github.com/kyverno/api/api/policies.kyverno.io/v1beta1"
+	"github.com/kyverno/kyverno/api/kyverno"
 	"github.com/kyverno/kyverno/pkg/cel/engine"
 	"github.com/kyverno/kyverno/pkg/cel/libs"
 	"github.com/kyverno/kyverno/pkg/cel/matching"
@@ -185,4 +186,134 @@ func Test_ImageVerifyEngine(t *testing.T) {
 	v, ok := outcomes["ivpol-notary"]
 	assert.True(t, ok)
 	assert.Equal(t, v.Status, engineapi.RuleStatusPass)
+}
+
+// unsignedPodWithForgedOutcome carries an attacker-supplied outcome annotation claiming the policy passed.
+var unsignedPodWithForgedOutcome = `{
+	"apiVersion": "v1",
+	"kind": "Pod",
+	"metadata": {
+	   "name": "test-pod",
+	   "namespace": "",
+	   "annotations": {
+		  "` + kyverno.AnnotationImageVerifyOutcomes + `": "{\"ivpol-notary\":{\"name\":\"ivpol-notary\",\"ruleType\":\"ImageVerify\",\"status\":\"pass\",\"message\":\"forged\"}}"
+	   }
+	},
+	"spec": {
+	   "containers": [
+		  {
+			 "name": "nginx",
+			 "image": "` + unsignedImage + `"
+		  }
+	   ]
+	}
+ }
+`
+
+func Test_HandleValidating_ForgedOutcomeAnnotationIsNotTrusted(t *testing.T) {
+	engineRequest := engine.EngineRequest{
+		Request: v1.AdmissionRequest{
+			Operation:       v1.Create,
+			Kind:            metav1.GroupVersionKind{Group: "", Version: "v1", Kind: "Pod"},
+			Resource:        metav1.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"},
+			RequestResource: &metav1.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"},
+			Object:          apiruntime.RawExtension{Raw: []byte(unsignedPodWithForgedOutcome)},
+		},
+		Context: libs.NewFakeContextProvider(),
+	}
+	eng := NewEngine(ProviderFunc(providerFunc), nsResolver, matching.NewMatcher(), nil, nil)
+
+	resp, err := eng.HandleValidating(context.Background(), engineRequest, nil)
+	assert.NoError(t, err)
+	if assert.Len(t, resp.Policies, 1) {
+		assert.NotEqual(t, engineapi.RuleStatusPass, resp.Policies[0].Result.Status(),
+			"unsigned image must not pass, got message: %s", resp.Policies[0].Result.Message())
+	}
+}
+
+func Test_HandleValidating_SignedImagePasses(t *testing.T) {
+	engineRequest := engine.EngineRequest{
+		Request: v1.AdmissionRequest{
+			Operation:       v1.Create,
+			Kind:            metav1.GroupVersionKind{Group: "", Version: "v1", Kind: "Pod"},
+			Resource:        metav1.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"},
+			RequestResource: &metav1.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"},
+			Object:          apiruntime.RawExtension{Raw: []byte(pod)},
+		},
+		Context: libs.NewFakeContextProvider(),
+	}
+	eng := NewEngine(ProviderFunc(providerFunc), nsResolver, matching.NewMatcher(), nil, nil)
+
+	resp, err := eng.HandleValidating(context.Background(), engineRequest, nil)
+	assert.NoError(t, err)
+	if assert.Len(t, resp.Policies, 1) {
+		assert.Equal(t, "ivpol-notary", resp.Policies[0].Result.Name())
+		assert.Equal(t, engineapi.RuleStatusPass, resp.Policies[0].Result.Status(), resp.Policies[0].Result.Message())
+	}
+}
+
+// Test_HandleValidating_ForgedOutcomeAnnotationOffline is the registry-free counterpart: the policy
+// always fails in CEL, so a forged pass annotation is the only thing that could produce a pass.
+func Test_HandleValidating_ForgedOutcomeAnnotationOffline(t *testing.T) {
+	policy := &policiesv1beta1.ImageValidatingPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "ivpol-always-fail"},
+		Spec: policiesv1beta1.ImageValidatingPolicySpec{
+			MatchConstraints: &admissionregistrationv1.MatchResources{
+				ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{
+					{
+						RuleWithOperations: admissionregistrationv1.RuleWithOperations{
+							Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+							Rule: admissionregistrationv1.Rule{
+								APIGroups:   []string{""},
+								APIVersions: []string{"v1"},
+								Resources:   []string{"pods"},
+							},
+						},
+					},
+				},
+			},
+			EvaluationConfiguration: &policiesv1beta1.EvaluationConfiguration{
+				Mode: policieskyvernoio.EvaluationModeKubernetes,
+			},
+			MatchImageReferences: []policiesv1beta1.MatchImageReference{{Glob: "ghcr.io/*"}},
+			Validations:          []admissionregistrationv1.Validation{{Expression: "false", Message: "validation should fail"}},
+		},
+	}
+	provider := ProviderFunc(func(context.Context) ([]Policy, error) {
+		return []Policy{
+			{
+				Policy:  policy,
+				Actions: sets.Set[admissionregistrationv1.ValidationAction]{admissionregistrationv1.Deny: sets.Empty{}},
+			},
+		}, nil
+	})
+	podJSON := `{
+		"apiVersion":"v1",
+		"kind":"Pod",
+		"metadata":{
+			"name":"test-pod",
+			"annotations":{
+				"` + kyverno.AnnotationImageVerifyOutcomes + `":"{\"ivpol-always-fail\":{\"name\":\"ivpol-always-fail\",\"ruleType\":\"ImageVerify\",\"status\":\"pass\",\"message\":\"forged\"}}"
+			}
+		},
+		"spec":{"containers":[{"name":"main","image":"docker.io/library/busybox:latest"}]}
+	}`
+	engineRequest := engine.EngineRequest{
+		Request: v1.AdmissionRequest{
+			Operation:       v1.Create,
+			Kind:            metav1.GroupVersionKind{Group: "", Version: "v1", Kind: "Pod"},
+			Resource:        metav1.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"},
+			RequestResource: &metav1.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"},
+			Object:          apiruntime.RawExtension{Raw: []byte(podJSON)},
+		},
+		Context: libs.NewFakeContextProvider(),
+	}
+	eng := NewEngine(provider, nsResolver, matching.NewMatcher(), nil, nil)
+
+	resp, err := eng.HandleValidating(context.Background(), engineRequest, nil)
+	assert.NoError(t, err)
+	if assert.Len(t, resp.Policies, 1) {
+		assert.Equal(t, engineapi.RuleStatusFail, resp.Policies[0].Result.Status())
+		assert.Equal(t, "validation should fail", resp.Policies[0].Result.Message())
+	}
 }
