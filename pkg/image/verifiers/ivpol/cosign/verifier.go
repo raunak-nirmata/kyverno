@@ -3,14 +3,17 @@ package cosign
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/go-logr/logr"
+	"github.com/google/go-containerregistry/pkg/name"
 	policiesv1beta1 "github.com/kyverno/api/api/policies.kyverno.io/v1beta1"
 	"github.com/kyverno/kyverno/pkg/logging"
 	"github.com/kyverno/sdk/extensions/imagedataloader"
 	"github.com/pkg/errors"
 	"github.com/sigstore/cosign/v3/pkg/cosign"
 	"github.com/sigstore/cosign/v3/pkg/oci"
+	ociremote "github.com/sigstore/cosign/v3/pkg/oci/remote"
 	"github.com/sigstore/cosign/v3/pkg/policy"
 	"github.com/sigstore/sigstore-go/pkg/root"
 	corev1listers "k8s.io/client-go/listers/core/v1"
@@ -36,14 +39,62 @@ func (v *Verifier) buildCheckOptsWithBundleDetection(ctx context.Context, attest
 	}
 
 	// Auto-detect if new bundle format (cosign v3) is actually present
-	newBundles, _, err := cosign.GetBundles(ctx, image.NameRef(), cOpts.RegistryClientOpts)
-	bundleDetected := len(newBundles) > 0 && err == nil
+	bundleDetected := hasNewBundleFormat(image.NameRef(), cOpts.RegistryClientOpts)
 	cOpts.NewBundleFormat = bundleDetected
 	if bundleDetected && shouldUseSignedTimestamps(cOpts.IgnoreTlog, cOpts.UseSignedTimestamps, cOpts.TrustedMaterial) {
 		cOpts.UseSignedTimestamps = true
 	}
 
 	return cOpts, nil
+}
+
+// bundleLayerMediaTypePrefix identifies the layer of a cosign v3 sigstore bundle referrer.
+const bundleLayerMediaTypePrefix = "application/vnd.dev.sigstore.bundle"
+
+// hasNewBundleFormat reports whether a cosign v3 sigstore bundle is attached to
+// the image, deciding from the referrers index and referrer manifests alone so
+// that no unverified bundle layer is downloaded before verification starts.
+// Registry errors mean "not detected", matching the previous behaviour.
+func hasNewBundleFormat(ref name.Reference, registryClientOpts []ociremote.Option) bool {
+	digest, err := ociremote.ResolveDigest(ref, registryClientOpts...)
+	if err != nil {
+		return false
+	}
+
+	index, err := ociremote.Referrers(digest, "", registryClientOpts...)
+	if err != nil {
+		return false
+	}
+
+	bundleRepo := digest.Repository
+	if targetRepo := ociremote.TargetRepositoryFromOptions(registryClientOpts...); (targetRepo != name.Repository{}) {
+		bundleRepo = targetRepo
+	}
+
+	for _, result := range index.Manifests {
+		st, err := name.ParseReference(fmt.Sprintf("%s@%s", bundleRepo, result.Digest.String()))
+		if err != nil {
+			continue
+		}
+		// ociremote carries the attestor's source credentials and name options, so
+		// the referrer manifest must be fetched through it and not through remote.
+		img, err := ociremote.SignedImage(st, registryClientOpts...)
+		if err != nil {
+			continue
+		}
+		manifest, err := img.Manifest()
+		if err != nil {
+			continue
+		}
+		if len(manifest.Layers) != 1 {
+			continue
+		}
+		if strings.HasPrefix(string(manifest.Layers[0].MediaType), bundleLayerMediaTypePrefix) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // shouldUseSignedTimestamps reports whether a detected Sigstore bundle (format
