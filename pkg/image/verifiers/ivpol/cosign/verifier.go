@@ -3,14 +3,17 @@ package cosign
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/go-logr/logr"
+	"github.com/google/go-containerregistry/pkg/name"
 	policiesv1beta1 "github.com/kyverno/api/api/policies.kyverno.io/v1beta1"
 	"github.com/kyverno/kyverno/pkg/logging"
 	"github.com/kyverno/sdk/extensions/imagedataloader"
 	"github.com/pkg/errors"
 	"github.com/sigstore/cosign/v3/pkg/cosign"
 	"github.com/sigstore/cosign/v3/pkg/oci"
+	ociremote "github.com/sigstore/cosign/v3/pkg/oci/remote"
 	"github.com/sigstore/cosign/v3/pkg/policy"
 )
 
@@ -33,16 +36,49 @@ func (v *Verifier) buildCheckOptsWithBundleDetection(ctx context.Context, attest
 		return nil, err
 	}
 
-	// Enable new bundle format detection (cosign v3)
-	cOpts.NewBundleFormat = true
-
-	// Auto-detect if new bundle format is actually present
-	newBundles, _, err := cosign.GetBundles(ctx, image.NameRef(), cOpts.RegistryClientOpts)
-	if len(newBundles) == 0 || err != nil {
-		cOpts.NewBundleFormat = false
-	}
+	// Auto-detect if new bundle format is actually present (cosign v3)
+	cOpts.NewBundleFormat = hasBundleReferrer(image.NameRef(), cOpts.RegistryClientOpts)
 
 	return cOpts, nil
+}
+
+// sigstoreBundleMediaTypePrefix identifies the layer of a cosign v3 bundle referrer.
+const sigstoreBundleMediaTypePrefix = "application/vnd.dev.sigstore.bundle"
+
+// hasBundleReferrer reports whether a cosign v3 bundle is attached to ref. It
+// reads only the referrers index and the referrer manifests, never a layer blob,
+// because detection runs before anything about the image has been verified.
+func hasBundleReferrer(ref name.Reference, registryClientOpts []ociremote.Option) bool {
+	digest, err := ociremote.ResolveDigest(ref, registryClientOpts...)
+	if err != nil {
+		return false
+	}
+	index, err := ociremote.Referrers(digest, "", registryClientOpts...)
+	if err != nil {
+		return false
+	}
+	for _, result := range index.Manifests {
+		referrer, err := name.ParseReference(fmt.Sprintf("%s@%s", digest.Repository, result.Digest.String()))
+		if err != nil {
+			continue
+		}
+		img, err := ociremote.SignedImage(referrer, registryClientOpts...)
+		if err != nil {
+			continue
+		}
+		manifest, err := img.Manifest()
+		if err != nil {
+			continue
+		}
+		// mirrors cosign's own bundle layout check, minus the layer read
+		if len(manifest.Layers) != 1 {
+			continue
+		}
+		if strings.HasPrefix(string(manifest.Layers[0].MediaType), sigstoreBundleMediaTypePrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (v *Verifier) VerifyImageSignature(ctx context.Context, image *imagedataloader.ImageData, attestor *policiesv1beta1.Attestor) error {
