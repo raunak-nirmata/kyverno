@@ -169,7 +169,7 @@ func Test_BundleDetection_OversizedBundleIsNotDetected(t *testing.T) {
 	runtime.GC()
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
-	cOpts, err := v.buildCheckOptsWithBundleDetection(context.TODO(), bundleTestAttestor(), img)
+	cOpts, _, _, err := v.buildCheckOptsWithBundleDetection(context.TODO(), bundleTestAttestor(), img)
 	runtime.ReadMemStats(&after)
 	require.NoError(t, err)
 
@@ -189,7 +189,7 @@ func Test_BundleDetection_Positive(t *testing.T) {
 
 	img := fetchTestImage(t, repo.Tag("subject").String())
 	v := NewVerifier(nil, logr.Discard())
-	cOpts, err := v.buildCheckOptsWithBundleDetection(context.TODO(), bundleTestAttestor(), img)
+	cOpts, _, _, err := v.buildCheckOptsWithBundleDetection(context.TODO(), bundleTestAttestor(), img)
 	require.NoError(t, err)
 	assert.True(t, cOpts.NewBundleFormat)
 }
@@ -202,7 +202,7 @@ func Test_BundleDetection_NoArtifactTypeOnReferrerManifest(t *testing.T) {
 
 	img := fetchTestImage(t, repo.Tag("subject").String())
 	v := NewVerifier(nil, logr.Discard())
-	cOpts, err := v.buildCheckOptsWithBundleDetection(context.TODO(), bundleTestAttestor(), img)
+	cOpts, _, _, err := v.buildCheckOptsWithBundleDetection(context.TODO(), bundleTestAttestor(), img)
 	require.NoError(t, err)
 	assert.True(t, cOpts.NewBundleFormat)
 }
@@ -214,7 +214,7 @@ func Test_BundleDetection_NegativeNoReferrers(t *testing.T) {
 	img := fetchTestImage(t, repo.Tag("subject").String())
 	v := NewVerifier(nil, logr.Discard())
 	blobGets.Store(0)
-	cOpts, err := v.buildCheckOptsWithBundleDetection(context.TODO(), bundleTestAttestor(), img)
+	cOpts, _, _, err := v.buildCheckOptsWithBundleDetection(context.TODO(), bundleTestAttestor(), img)
 	require.NoError(t, err)
 	assert.False(t, cOpts.NewBundleFormat)
 	assert.Zero(t, blobGets.Load())
@@ -228,7 +228,7 @@ func Test_BundleDetection_NegativeNonBundleReferrer(t *testing.T) {
 	img := fetchTestImage(t, repo.Tag("subject").String())
 	v := NewVerifier(nil, logr.Discard())
 	blobGets.Store(0)
-	cOpts, err := v.buildCheckOptsWithBundleDetection(context.TODO(), bundleTestAttestor(), img)
+	cOpts, _, _, err := v.buildCheckOptsWithBundleDetection(context.TODO(), bundleTestAttestor(), img)
 	require.NoError(t, err)
 	assert.False(t, cOpts.NewBundleFormat)
 	assert.Zero(t, blobGets.Load())
@@ -290,7 +290,7 @@ func Test_V2SignedImage_WithPlantedBundleReferrer_IsAdmitted(t *testing.T) {
 	v := NewVerifier(nil, logr.Discard())
 	attestor := &v1beta1.Attestor{Name: "test", Cosign: keyAttestorFor(pubPEM)}
 
-	cOpts, err := v.buildCheckOptsWithBundleDetection(context.TODO(), attestor.Cosign, img)
+	cOpts, _, _, err := v.buildCheckOptsWithBundleDetection(context.TODO(), attestor.Cosign, img)
 	require.NoError(t, err)
 	assert.False(t, cOpts.NewBundleFormat, "an unparseable bundle referrer must not be detected as v3")
 
@@ -298,25 +298,32 @@ func Test_V2SignedImage_WithPlantedBundleReferrer_IsAdmitted(t *testing.T) {
 		"a v2-signed image with a planted bundle referrer must be admitted")
 }
 
-// detectionEquivalence asserts the detector and cosign.GetBundles agree on a fixture.
+// detectionEquivalence asserts loadBundles and cosign.GetBundles agree on a
+// fixture, both on whether a bundle was found and, when both found one, on how
+// many: a future divergence in cosign's acceptance predicate must fail a test
+// rather than silently change behaviour.
 func detectionEquivalence(t *testing.T, repo name.Repository, want bool) {
 	t.Helper()
 	img := fetchTestImage(t, repo.Tag("subject").String())
 	v := NewVerifier(nil, logr.Discard())
-	cOpts, err := v.buildCheckOptsWithBundleDetection(context.TODO(), bundleTestAttestor(), img)
+	cOpts, bundles, _, err := v.buildCheckOptsWithBundleDetection(context.TODO(), bundleTestAttestor(), img)
 	require.NoError(t, err)
 
 	// GetBundles reports "none found" as ErrNoMatchingAttestations, not as success.
-	bundles, _, err := cosign.GetBundles(context.TODO(), img.NameRef(), cOpts.RegistryClientOpts)
+	cosignBundles, _, err := cosign.GetBundles(context.TODO(), img.NameRef(), cOpts.RegistryClientOpts)
 	var noneFound *cosign.ErrNoMatchingAttestations
 	if err != nil {
 		require.ErrorAs(t, err, &noneFound)
 	}
-	cosignSays := err == nil && len(bundles) > 0
+	cosignSays := err == nil && len(cosignBundles) > 0
 
-	t.Logf("detector=%v cosign.GetBundles=%v (want %v)", cOpts.NewBundleFormat, cosignSays, want)
+	t.Logf("detector=%v (%d bundles) cosign.GetBundles=%v (%d bundles) (want %v)",
+		cOpts.NewBundleFormat, len(bundles), cosignSays, len(cosignBundles), want)
 	assert.Equal(t, want, cOpts.NewBundleFormat, "detector disagrees with expectation")
 	assert.Equal(t, cosignSays, cOpts.NewBundleFormat, "detector disagrees with cosign.GetBundles")
+	if cosignSays && cOpts.NewBundleFormat {
+		assert.Equal(t, len(cosignBundles), len(bundles), "detector and cosign.GetBundles disagree on bundle count")
+	}
 }
 
 func Test_BundleDetection_MatchesCosign_GenuineBundle(t *testing.T) {
@@ -353,5 +360,17 @@ func Test_BundleDetection_MatchesCosign_GzippedBundle(t *testing.T) {
 	repo, _ := newBundleRegistry(t)
 	subject := pushSubject(t, repo, "subject")
 	pushReferrer(t, repo, subject, gzipPaddedBundle(t, 0), testBundleMediaType, testBundleMediaType)
+	detectionEquivalence(t, repo, true)
+}
+
+// Test_BundleDetection_MatchesCosign_TwoGenuineBundles makes the bundle-count
+// comparison in detectionEquivalence load-bearing: a fixture with a single
+// bundle cannot tell "found a bundle" apart from "found the right number".
+func Test_BundleDetection_MatchesCosign_TwoGenuineBundles(t *testing.T) {
+	repo, _ := newBundleRegistry(t)
+	subject := pushSubject(t, repo, "subject")
+	pushReferrer(t, repo, subject, []byte(validBundle), testBundleMediaType, testBundleMediaType)
+	bundle2, _ := signV3Bundle(t, subject.Digest.Hex, "https://example.com/predicate")
+	pushReferrer(t, repo, subject, bundle2, testBundleMediaType, testBundleMediaType)
 	detectionEquivalence(t, repo, true)
 }
