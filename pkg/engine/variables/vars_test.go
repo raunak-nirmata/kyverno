@@ -1617,3 +1617,23 @@ func Test_SubstitutionOutputSizeIsBoundedPerDocument(t *testing.T) {
 	_, err := SubstituteAll(logr.Discard(), ctx, doc)
 	assert.ErrorContains(t, err, "exceeded the maximum substituted output size")
 }
+
+// Test_SubstitutionOutputSizeBoundsWholeLeafForm pins that the cap also covers
+// a leaf that is exactly "{{ var }}" (the most common authoring shape), which
+// returns the resolved value directly. Many such leaves each resolving a large
+// value expand the marshalled document without bound, so this path must be
+// accounted too, not only the embedded "x{{ var }}y" form.
+func Test_SubstitutionOutputSizeBoundsWholeLeafForm(t *testing.T) {
+	ctx := context.NewContext(jp)
+	chunk := strings.Repeat("a", 1<<20) // 1 MiB, well under the per-leaf cap
+	assert.NilError(t, context.AddJSONObject(ctx, map[string]interface{}{"c": chunk}))
+
+	// 12 whole-leaf "{{ c }}" fields: ~12 MiB total, over the 10 MiB cap.
+	doc := make(map[string]interface{}, 12)
+	for i := 0; i < 12; i++ {
+		doc[fmt.Sprintf("f%d", i)] = "{{ c }}"
+	}
+
+	_, err := SubstituteAll(logr.Discard(), ctx, doc)
+	assert.ErrorContains(t, err, "exceeded the maximum substituted output size")
+}
