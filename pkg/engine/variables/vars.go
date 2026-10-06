@@ -486,6 +486,32 @@ func substituteVariablesIfAny(log logr.Logger, ctx context.EvalInterface, lookup
 			log.V(3).Info("variable substituted", "variable", v, "value", substitutedVar, "path", data.Path)
 
 			if g2start == 0 && g2end == len(value) {
+				// A leaf that is exactly "{{ var }}" returns the resolved value
+				// as-is to preserve its type, but it must still count against the
+				// per-document budgets. Otherwise many such leaves, each resolving
+				// a large value, expand the marshalled document without bound while
+				// the embedded path below is capped.
+				outBytes := 0
+				if s, ok := substitutedVar.(string); ok {
+					outBytes = len(s)
+				} else if substitutedVar != nil {
+					buffer, mErr := json.Marshal(substitutedVar)
+					if mErr != nil {
+						return nil, fmt.Errorf("failed to resolve %v at path %s: failed to marshal %T: %v", variable, data.Path, substitutedVar, substitutedVar)
+					}
+					outBytes = len(buffer)
+				}
+
+				totalSubs++
+				if totalSubs > maxTotalSubstitutions {
+					return nil, fmt.Errorf("failed to resolve %v at path %s: exceeded the hard limit on total variable substitutions", variable, data.Path)
+				}
+
+				totalOutputBytes += outBytes
+				if totalOutputBytes > maxSubstitutedOutputBytes {
+					return nil, fmt.Errorf("failed to resolve %v at path %s: exceeded the maximum substituted output size of %d bytes", variable, data.Path, maxSubstitutedOutputBytes)
+				}
+
 				return substitutedVar, nil
 			}
 
