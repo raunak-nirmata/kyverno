@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "tag_scanned": "none",
+  "release_branch": "release-1.19-n4k",
+  "generated_at": "2026-10-06T11:17:52Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-q62c-r9v2-cf64",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "1.19.x on release-1.19-n4k before 7db8081ddc2b4d2d823ccc095a8a8a64d6478070",
+      "fixed": "unreleased (release-1.19-n4k)",
+      "images": [
+        "kyverno",
+        "cleanup-controller"
+      ],
+      "notes": "Legacy generate and cleanup policy admission checked Kyverno controller permissions without independently authorizing the policy author for the selected targets. Admission now submits separate SubjectAccessReviews for the author, including groups, on creation and full-spec changes; unchanged specs retain existing validation without additional author permissions. Unresolved target API versions and kinds fail closed in live admission, variable namespaces require cluster-wide authorization, and every cloneList kind is checked. Empty author identities are rejected, and generate author checks run before warning returns. Offline CLI templates remain supported. This records the release-1.19-n4k code fix for the 1.19.2 security workstream; no patched enterprise tag or public release is asserted. Hold docs publication until advisory disclosure. Fixed by commit 7db8081ddc2b4d2d823ccc095a8a8a64d6478070"
+    }
+  ]
+}

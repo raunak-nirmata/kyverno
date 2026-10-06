@@ -13,7 +13,9 @@ import (
 	"github.com/kyverno/kyverno/pkg/config"
 	enginecontext "github.com/kyverno/kyverno/pkg/engine/context"
 	"github.com/kyverno/kyverno/pkg/engine/variables"
+	datautils "github.com/kyverno/kyverno/pkg/utils/data"
 	policyvalidation "github.com/kyverno/kyverno/pkg/validation/policy"
+	authenticationv1 "k8s.io/api/authentication/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/discovery"
 )
@@ -45,6 +47,25 @@ func FetchClusteredResources(logger logr.Logger, client dclient.Interface) (sets
 
 // Validate checks policy is valid
 func Validate(ctx context.Context, logger logr.Logger, client dclient.Interface, cleanupPolicy kyvernov2.CleanupPolicyInterface) error {
+	return validate(ctx, logger, client, cleanupPolicy, nil)
+}
+
+// ValidateWithUserInfo validates a cleanup policy and checks the submitting
+// user's permissions independently from the cleanup controller's permissions.
+func ValidateWithUserInfo(ctx context.Context, logger logr.Logger, client dclient.Interface, cleanupPolicy kyvernov2.CleanupPolicyInterface, author authenticationv1.UserInfo) error {
+	return ValidateAdmission(ctx, logger, client, cleanupPolicy, nil, author)
+}
+
+// ValidateAdmission checks the submitting user's permissions on creation or a
+// spec change. Metadata-only updates retain all other policy validation checks.
+func ValidateAdmission(ctx context.Context, logger logr.Logger, client dclient.Interface, cleanupPolicy, oldPolicy kyvernov2.CleanupPolicyInterface, author authenticationv1.UserInfo) error {
+	if author.Username != "" && oldPolicy != nil && datautils.DeepEqual(cleanupPolicy.GetSpec(), oldPolicy.GetSpec()) {
+		return validate(ctx, logger, client, cleanupPolicy, nil)
+	}
+	return validate(ctx, logger, client, cleanupPolicy, &author)
+}
+
+func validate(ctx context.Context, logger logr.Logger, client dclient.Interface, cleanupPolicy kyvernov2.CleanupPolicyInterface, author *authenticationv1.UserInfo) error {
 	clusteredResources, err := FetchClusteredResources(logger, client)
 	if err != nil {
 		return err
@@ -55,8 +76,14 @@ func Validate(ctx context.Context, logger logr.Logger, client dclient.Interface,
 	if err := validateGlobLengths(cleanupPolicy); err != nil {
 		return err
 	}
-	if err := validateAuth(ctx, client, cleanupPolicy); err != nil {
+	controller := config.KyvernoUserName(config.KyvernoServiceAccountName())
+	if err := validateAuth(ctx, client, cleanupPolicy, controller, nil, "cleanup controller"); err != nil {
 		return err
+	}
+	if author != nil {
+		if err := validateAuth(ctx, client, cleanupPolicy, author.Username, author.Groups, "policy author"); err != nil {
+			return err
+		}
 	}
 
 	if err := validateVariables(logger, cleanupPolicy); err != nil {
@@ -113,7 +140,7 @@ func validatePolicy(clusterResources sets.Set[string], policy kyvernov2.CleanupP
 }
 
 // validateAuth checks the delete action is allowed
-func validateAuth(ctx context.Context, client dclient.Interface, policy kyvernov2.CleanupPolicyInterface) error {
+func validateAuth(ctx context.Context, client dclient.Interface, policy kyvernov2.CleanupPolicyInterface, user string, groups []string, subject string) error {
 	namespace := policy.GetNamespace()
 	spec := policy.GetSpec()
 	resourceFilters := spec.MatchResources.GetResourceFilters()
@@ -124,7 +151,7 @@ func validateAuth(ctx context.Context, client dclient.Interface, policy kyvernov
 				names = append(names, "")
 			}
 			for _, name := range names {
-				err := canI(ctx, client, kind, namespace, name, "")
+				err := canI(ctx, client, kind, namespace, name, "", user, groups, subject)
 				if err != nil {
 					return err
 				}
@@ -134,23 +161,23 @@ func validateAuth(ctx context.Context, client dclient.Interface, policy kyvernov
 	return nil
 }
 
-func canI(ctx context.Context, client dclient.Interface, kind, namespace, name, subresource string) error {
-	checker := auth.NewCanI(client.Discovery(), client.GetKubeClient().AuthorizationV1().SubjectAccessReviews(), kind, namespace, name, "delete", subresource, config.KyvernoUserName(config.KyvernoServiceAccountName()))
+func canI(ctx context.Context, client dclient.Interface, kind, namespace, name, subresource, user string, groups []string, subject string) error {
+	checker := auth.NewCanIWithGroups(client.Discovery(), client.GetKubeClient().AuthorizationV1().SubjectAccessReviews(), kind, namespace, name, "delete", subresource, user, groups)
 	allowedDeletion, _, err := checker.RunAccessCheck(ctx)
 	if err != nil {
 		return err
 	}
 	if !allowedDeletion {
-		return fmt.Errorf("cleanup controller has no permission to delete kind %s", kind)
+		return fmt.Errorf("%s %q has no permission to delete kind %s", subject, user, kind)
 	}
 
-	checker = auth.NewCanI(client.Discovery(), client.GetKubeClient().AuthorizationV1().SubjectAccessReviews(), kind, namespace, name, "list", subresource, config.KyvernoUserName(config.KyvernoServiceAccountName()))
+	checker = auth.NewCanIWithGroups(client.Discovery(), client.GetKubeClient().AuthorizationV1().SubjectAccessReviews(), kind, namespace, name, "list", subresource, user, groups)
 	allowedList, _, err := checker.RunAccessCheck(ctx)
 	if err != nil {
 		return err
 	}
 	if !allowedList {
-		return fmt.Errorf("cleanup controller has no permission to list kind %s", kind)
+		return fmt.Errorf("%s %q has no permission to list kind %s", subject, user, kind)
 	}
 	return nil
 }
