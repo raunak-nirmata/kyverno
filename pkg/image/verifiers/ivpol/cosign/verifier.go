@@ -8,6 +8,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/google/go-containerregistry/pkg/name"
 	policiesv1beta1 "github.com/kyverno/api/api/policies.kyverno.io/v1beta1"
+	"github.com/kyverno/kyverno/pkg/image/verifiers"
 	"github.com/kyverno/kyverno/pkg/logging"
 	"github.com/kyverno/sdk/extensions/imagedataloader"
 	"github.com/pkg/errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/sigstore/cosign/v3/pkg/oci"
 	ociremote "github.com/sigstore/cosign/v3/pkg/oci/remote"
 	"github.com/sigstore/cosign/v3/pkg/policy"
+	sgbundle "github.com/sigstore/sigstore-go/pkg/bundle"
 )
 
 type Verifier struct {
@@ -45,9 +47,11 @@ func (v *Verifier) buildCheckOptsWithBundleDetection(ctx context.Context, attest
 // sigstoreBundleMediaTypePrefix identifies the layer of a cosign v3 bundle referrer.
 const sigstoreBundleMediaTypePrefix = "application/vnd.dev.sigstore.bundle"
 
-// hasBundleReferrer reports whether a cosign v3 bundle is attached to ref. It
-// reads only the referrers index and the referrer manifests, never a layer blob,
-// because detection runs before anything about the image has been verified.
+// maxBundleLayerSize bounds a bundle layer read, matching the limit used for other registry reads.
+const maxBundleLayerSize = int64(10 * 1000 * 1000)
+
+// hasBundleReferrer reports whether a cosign v3 bundle is attached to ref, by
+// applying cosign's own bundle acceptance check to layer bytes read under a size limit.
 func hasBundleReferrer(ref name.Reference, registryClientOpts []ociremote.Option) bool {
 	digest, err := ociremote.ResolveDigest(ref, registryClientOpts...)
 	if err != nil {
@@ -66,15 +70,25 @@ func hasBundleReferrer(ref name.Reference, registryClientOpts []ociremote.Option
 		if err != nil {
 			continue
 		}
-		manifest, err := img.Manifest()
+		layers, err := img.Layers()
+		if err != nil || len(layers) != 1 {
+			continue
+		}
+		mediaType, err := layers[0].MediaType()
+		if err != nil || !strings.HasPrefix(string(mediaType), sigstoreBundleMediaTypePrefix) {
+			continue
+		}
+		// anything unreadable or unparseable within the limit is not a v3 bundle, so
+		// verification falls back to the v2 path instead of denying the request
+		bundleBytes, err := verifiers.ReadLayerLimited(layers[0], maxBundleLayerSize)
 		if err != nil {
 			continue
 		}
-		// mirrors cosign's own bundle layout check, minus the layer read
-		if len(manifest.Layers) != 1 {
+		b := &sgbundle.Bundle{}
+		if err := b.UnmarshalJSON(bundleBytes); err != nil {
 			continue
 		}
-		if strings.HasPrefix(string(manifest.Layers[0].MediaType), sigstoreBundleMediaTypePrefix) {
+		if b.MinVersion("v0.3") {
 			return true
 		}
 	}

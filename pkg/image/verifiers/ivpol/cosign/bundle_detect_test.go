@@ -8,9 +8,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"runtime"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -30,16 +34,22 @@ import (
 
 const (
 	testBundleMediaType = "application/vnd.dev.sigstore.bundle.v0.3+json"
-	// detection must not grow with the referrer layer, so bound it well below
-	// what a single inflated layer of this size would cost
-	detectionAllocBudget = 16 << 20
-	largeLayerPlaintext  = 256 << 20
 
 	// smallest payload cosign's own bundle parser accepts as a v3 bundle
 	validBundleJSON = `{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json",` +
 		`"verificationMaterial":{"publicKey":{"hint":"test"}},` +
 		`"messageSignature":{"messageDigest":{"algorithm":"SHA2_256","digest":"` +
 		"4OPbgKpBPdxhxVQnOq0LDYU1kAS5ksqIVYEZfvPqSrE=" + `"},"signature":"AAAA"}}`
+
+	// a decoy anyone with push access to the repository can attach: right media
+	// type, content that is not a bundle
+	decoyBundleJSON = `{"not":"a real sigstore bundle"}`
+
+	// inflates past maxBundleLayerSize from a few KB on the wire
+	oversizedPlaintext = 256 << 20
+
+	// detection must stay bounded well below the inflated layer size
+	detectionAllocBudget = 48 << 20
 )
 
 // rawManifest lets a test PUT a hand-built manifest so a referrer can be laid
@@ -52,13 +62,29 @@ type rawManifest struct {
 func (r rawManifest) RawManifest() ([]byte, error)        { return r.body, nil }
 func (r rawManifest) MediaType() (types.MediaType, error) { return r.mt, nil }
 
-func startTestRegistry(t *testing.T) string {
+var blobGetPath = regexp.MustCompile(`^/v2/.+/blobs/sha256:[0-9a-f]{64}$`)
+
+// localRegistry is an in-process registry that counts layer-blob GETs.
+type localRegistry struct {
+	host     string
+	blobGets atomic.Int64
+}
+
+func startTestRegistry(t *testing.T) *localRegistry {
 	t.Helper()
-	srv := httptest.NewServer(registry.New(registry.WithReferrersSupport(true), registry.Logger(nopLogger(t))))
+	tr := &localRegistry{}
+	inner := registry.New(registry.WithReferrersSupport(true), registry.Logger(nopLogger(t)))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && blobGetPath.MatchString(r.URL.Path) {
+			tr.blobGets.Add(1)
+		}
+		inner.ServeHTTP(w, r)
+	}))
 	t.Cleanup(srv.Close)
 	u, err := url.Parse(srv.URL)
 	require.NoError(t, err)
-	return u.Host
+	tr.host = u.Host
+	return tr
 }
 
 func nopLogger(t *testing.T) *log.Logger {
@@ -167,91 +193,36 @@ func allocatedBy(fn func()) uint64 {
 	return after.TotalAlloc - before.TotalAlloc
 }
 
-// Positive control: a referrer cosign itself parses as a v3 bundle is detected.
-func TestHasBundleReferrer_BundlePresent(t *testing.T) {
-	ctx := context.Background()
-	host := startTestRegistry(t)
-	tag, subject := pushSubject(t, host, "with-bundle")
-	pushReferrer(t, host, "with-bundle", subject, testBundleMediaType, []byte(validBundleJSON))
-
-	bundles, _, err := cosign.GetBundles(ctx, tag, testRegistryOpts(ctx))
-	require.NoError(t, err)
-	require.Len(t, bundles, 1)
-	require.True(t, hasBundleReferrer(tag, testRegistryOpts(ctx)))
+// cosignDetects reports what cosign's own bundle discovery concludes for ref.
+func cosignDetects(ctx context.Context, ref name.Reference) bool {
+	bundles, _, err := cosign.GetBundles(ctx, ref, testRegistryOpts(ctx))
+	return err == nil && len(bundles) > 0
 }
 
-// Negative control: an image with no referrers at all is not detected.
-func TestHasBundleReferrer_NoReferrers(t *testing.T) {
+// The regression this fixes: a referrer anyone can plant, carrying the bundle
+// media type and content that is not a bundle, must not route the image to the
+// v3 attestation path.
+func TestHasBundleReferrer_DecoyReferrerNotDetected(t *testing.T) {
 	ctx := context.Background()
-	host := startTestRegistry(t)
-	tag, _ := pushSubject(t, host, "no-referrers")
+	reg := startTestRegistry(t)
+	tag, subject := pushSubject(t, reg.host, "decoy")
+	pushReferrer(t, reg.host, "decoy", subject, testBundleMediaType, []byte(decoyBundleJSON))
 
-	bundles, _, err := cosign.GetBundles(ctx, tag, testRegistryOpts(ctx))
-	require.Error(t, err)
-	require.Empty(t, bundles)
 	require.False(t, hasBundleReferrer(tag, testRegistryOpts(ctx)))
+	require.False(t, cosignDetects(ctx, tag))
 }
 
-// Negative control: a referrer that is not a bundle is not detected.
-func TestHasBundleReferrer_NonBundleReferrer(t *testing.T) {
+// End-to-end: the check options a v2-signed image is verified with must stay on
+// the v2 path when a decoy referrer is attached.
+func TestBuildCheckOpts_DecoyReferrerStaysOnV2Path(t *testing.T) {
 	ctx := context.Background()
-	host := startTestRegistry(t)
-	tag, subject := pushSubject(t, host, "other-referrer")
-	pushReferrer(t, host, "other-referrer", subject, "application/vnd.in-toto+json", []byte(`{}`))
-
-	bundles, _, err := cosign.GetBundles(ctx, tag, testRegistryOpts(ctx))
-	require.Error(t, err)
-	require.Empty(t, bundles)
-	require.False(t, hasBundleReferrer(tag, testRegistryOpts(ctx)))
-}
-
-// Negative control: a referrer with more than one layer is not a bundle.
-func TestHasBundleReferrer_MultiLayerReferrer(t *testing.T) {
-	ctx := context.Background()
-	host := startTestRegistry(t)
-	tag, subject := pushSubject(t, host, "multi-layer")
-	pushReferrerLayers(t, host, "multi-layer", subject, testBundleMediaType,
-		[][]byte{[]byte(validBundleJSON), []byte(validBundleJSON + " ")})
-
-	bundles, _, err := cosign.GetBundles(ctx, tag, testRegistryOpts(ctx))
-	require.Error(t, err)
-	require.Empty(t, bundles)
-	require.False(t, hasBundleReferrer(tag, testRegistryOpts(ctx)))
-}
-
-// Detection must not depend on the referrers index carrying an artifactType,
-// and must not grow with the size of the referrer layer.
-func TestHasBundleReferrer_DoesNotReadLayers(t *testing.T) {
-	ctx := context.Background()
-	host := startTestRegistry(t)
-	tag, subject := pushSubject(t, host, "large-layer")
-	pushReferrer(t, host, "large-layer", subject, testBundleMediaType, expandingLayer(t, largeLayerPlaintext))
-
-	digest, err := ociremote.ResolveDigest(tag, testRegistryOpts(ctx)...)
-	require.NoError(t, err)
-	index, err := ociremote.Referrers(digest, "", testRegistryOpts(ctx)...)
-	require.NoError(t, err)
-	require.Len(t, index.Manifests, 1)
-	t.Logf("index descriptor: mediaType=%q artifactType=%q", index.Manifests[0].MediaType, index.Manifests[0].ArtifactType)
-
-	var detected bool
-	alloc := allocatedBy(func() { detected = hasBundleReferrer(tag, testRegistryOpts(ctx)) })
-	t.Logf("detection allocated %d bytes", alloc)
-	require.True(t, detected)
-	require.Less(t, alloc, uint64(detectionAllocBudget))
-}
-
-// The detection reached through buildCheckOptsWithBundleDetection reports the
-// bundle format for an image whose only referrer is a large bundle layer.
-func TestBuildCheckOpts_BundleDetection(t *testing.T) {
-	ctx := context.Background()
-	host := startTestRegistry(t)
-	_, subject := pushSubject(t, host, "e2e")
-	pushReferrer(t, host, "e2e", subject, testBundleMediaType, []byte(validBundleJSON))
+	reg := startTestRegistry(t)
+	_, subject := pushSubject(t, reg.host, "decoy-e2e")
+	pushReferrer(t, reg.host, "decoy-e2e", subject, testBundleMediaType, []byte(decoyBundleJSON))
 
 	idf, err := imagedataloader.New(nil)
 	require.NoError(t, err)
-	img, err := idf.FetchImageData(ctx, fmt.Sprintf("%s/e2e:latest", host))
+	img, err := idf.FetchImageData(ctx, fmt.Sprintf("%s/decoy-e2e:latest", reg.host))
 	require.NoError(t, err)
 
 	attestor := &v1beta1.Cosign{
@@ -265,8 +236,84 @@ func TestBuildCheckOpts_BundleDetection(t *testing.T) {
 	v := NewVerifier(nil, logr.Discard())
 
 	cOpts, err := v.buildCheckOptsWithBundleDetection(ctx, attestor, img)
-	if err != nil {
-		t.Skipf("cosign check options unavailable: %v", err)
+	require.NoError(t, err)
+	require.False(t, cOpts.NewBundleFormat)
+}
+
+// Detection must agree with cosign's own bundle discovery in both directions.
+func TestHasBundleReferrer_MatchesCosign(t *testing.T) {
+	cases := []struct {
+		name      string
+		mediaType string
+		layers    [][]byte
+		want      bool
+	}{
+		{name: "genuine-bundle", mediaType: testBundleMediaType, layers: [][]byte{[]byte(validBundleJSON)}, want: true},
+		{name: "decoy-content", mediaType: testBundleMediaType, layers: [][]byte{[]byte(decoyBundleJSON)}, want: false},
+		{name: "no-referrers", want: false},
+		{name: "non-sigstore-referrer", mediaType: "application/vnd.in-toto+json", layers: [][]byte{[]byte(`{}`)}, want: false},
+		{name: "two-layer-referrer", mediaType: testBundleMediaType, layers: [][]byte{[]byte(validBundleJSON), []byte(validBundleJSON + " ")}, want: false},
 	}
-	require.True(t, cOpts.NewBundleFormat)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			reg := startTestRegistry(t)
+			tag, subject := pushSubject(t, reg.host, tc.name)
+			if len(tc.layers) > 0 {
+				pushReferrerLayers(t, reg.host, tc.name, subject, tc.mediaType, tc.layers)
+			}
+			require.Equal(t, tc.want, hasBundleReferrer(tag, testRegistryOpts(ctx)), "detector")
+			require.Equal(t, tc.want, cosignDetects(ctx, tag), "cosign")
+		})
+	}
+}
+
+// A non-sigstore referrer is rejected from its manifest, so no layer blob is fetched.
+func TestHasBundleReferrer_NonSigstoreReferrerReadsNoBlob(t *testing.T) {
+	ctx := context.Background()
+	reg := startTestRegistry(t)
+	tag, subject := pushSubject(t, reg.host, "no-blob-read")
+	pushReferrer(t, reg.host, "no-blob-read", subject, "application/vnd.in-toto+json", []byte(validBundleJSON))
+
+	before := reg.blobGets.Load()
+	require.False(t, hasBundleReferrer(tag, testRegistryOpts(ctx)))
+	require.Equal(t, int64(0), reg.blobGets.Load()-before)
+}
+
+// A bundle-media-type layer that inflates past the limit is not a v3 bundle, and
+// reading it must not allocate the inflated size.
+func TestHasBundleReferrer_OversizedLayerNotDetected(t *testing.T) {
+	ctx := context.Background()
+	reg := startTestRegistry(t)
+	tag, subject := pushSubject(t, reg.host, "oversized")
+	bomb := expandingLayer(t, oversizedPlaintext)
+	t.Logf("layer is %d bytes on the wire, inflates to %d", len(bomb), oversizedPlaintext)
+	pushReferrer(t, reg.host, "oversized", subject, testBundleMediaType, bomb)
+
+	before := reg.blobGets.Load()
+	var detected bool
+	alloc := allocatedBy(func() { detected = hasBundleReferrer(tag, testRegistryOpts(ctx)) })
+	gets := reg.blobGets.Load() - before
+	t.Logf("detection allocated %d bytes across %d layer-blob GETs", alloc, gets)
+
+	require.False(t, detected)
+	require.Equal(t, int64(1), gets)
+	require.Less(t, alloc, uint64(detectionAllocBudget))
+	require.False(t, cosignDetects(ctx, tag))
+}
+
+// Detection does not depend on the referrers index carrying an artifactType.
+func TestReferrersIndexDescriptor(t *testing.T) {
+	ctx := context.Background()
+	reg := startTestRegistry(t)
+	tag, subject := pushSubject(t, reg.host, "index-shape")
+	pushReferrer(t, reg.host, "index-shape", subject, testBundleMediaType, []byte(validBundleJSON))
+
+	digest, err := ociremote.ResolveDigest(tag, testRegistryOpts(ctx)...)
+	require.NoError(t, err)
+	index, err := ociremote.Referrers(digest, "", testRegistryOpts(ctx)...)
+	require.NoError(t, err)
+	require.Len(t, index.Manifests, 1)
+	require.True(t, strings.HasPrefix(string(index.Manifests[0].MediaType), "application/vnd.oci.image.manifest"))
+	require.True(t, hasBundleReferrer(tag, testRegistryOpts(ctx)))
 }
