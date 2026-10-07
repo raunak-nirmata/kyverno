@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "tag_scanned": "none",
+  "release_branch": "release-1.19-n4k",
+  "generated_at": "2026-10-07T07:22:04Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-vjfx-fp68-rh4v",
+      "severity": "CRITICAL",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "1.19.x on release-1.19-n4k before dc0785d45c01bca24ac60d142ac78e625832111f",
+      "fixed": "unreleased (release-1.19-n4k)",
+      "images": [
+        "kyverno"
+      ],
+      "notes": "Legacy namespaced generate rules allowed expressions to select resource types or namespaces before their scope could be established. Namespaced policies now require static scope-selecting fields while preserving dynamic resource names. Both variables and references are rejected in these fields, and live admission preserves fail-closed target authorization. This records the release-1.19-n4k code fix for the 1.19.2 security workstream; no patched enterprise tag or public release is asserted. Hold docs publication until advisory disclosure. Fixed by commit dc0785d45c01bca24ac60d142ac78e625832111f"
+    }
+  ]
+}
