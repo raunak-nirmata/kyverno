@@ -30,7 +30,6 @@ import (
 	"github.com/kyverno/sdk/cel/utils"
 	"go.uber.org/multierr"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -294,17 +293,30 @@ func (p *processor) GetPolicy(ur *kyvernov2.UpdateRequest) (v1beta1.MutatingPoli
 	var err error
 
 	failures := make([]error, 0, 1)
-	mpol, err = p.kyvernoClient.PoliciesV1beta1().MutatingPolicies().Get(context.TODO(), ur.Spec.Policy, metav1.GetOptions{})
-	if err == nil {
-		return mpol, nil
-	}
 
-	// Try NamespacedMutatingPolicy
-	if errors.IsNotFound(err) {
-		name, ns := policy.ParsePolicyKey(ur.Spec.Policy)
+	name, ns := policy.ParsePolicyKey(ur.Spec.Policy)
+	if ns != "" {
+		// Namespaced policy: go straight to the NamespacedMutatingPolicy lookup. Passing the
+		// whole key to MutatingPolicies().Get would be rejected as an invalid resource name
+		// ("may not contain '/'"), which is not a NotFound and so would skip any fallback.
 		mpol, err = p.kyvernoClient.PoliciesV1beta1().NamespacedMutatingPolicies(ns).Get(context.TODO(), name, metav1.GetOptions{})
 		if err == nil {
 			return mpol, nil
+		}
+	} else {
+		mpol, err = p.kyvernoClient.PoliciesV1beta1().MutatingPolicies().Get(context.TODO(), name, metav1.GetOptions{})
+		if err == nil {
+			return mpol, nil
+		}
+		// UpdateRequests created before this version carry the bare policy name. A
+		// NamespacedMutatingPolicy only matches resources in its own namespace, so the
+		// admission request's namespace is the policy's namespace.
+		if ar := ur.Spec.Context.AdmissionRequestInfo.AdmissionRequest; ar != nil && ar.Namespace != "" {
+			nmpol, nerr := p.kyvernoClient.PoliciesV1beta1().NamespacedMutatingPolicies(ar.Namespace).Get(context.TODO(), name, metav1.GetOptions{})
+			if nerr == nil {
+				return nmpol, nil
+			}
+			err = multierr.Combine(err, nerr)
 		}
 	}
 
@@ -328,7 +340,7 @@ func (p *processor) getTargetsFromExpression(ctx context.Context, ur *kyvernov2.
 	if err != nil {
 		return nil, err
 	}
-	pol, err := p.engine.GetCompiledPolicy(mpol.GetName())
+	pol, err := p.engine.GetCompiledPolicy(mpolengine.PolicyKey(mpol))
 	if err != nil {
 		return nil, err
 	}
