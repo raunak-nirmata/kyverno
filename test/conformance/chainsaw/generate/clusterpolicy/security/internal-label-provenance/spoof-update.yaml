@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: existing
+  namespace: internal-label-provenance-tenant
+  labels:
+    app.kubernetes.io/managed-by: kyverno
+    generate.kyverno.io/policy-name: internal-label-provenance
+    generate.kyverno.io/policy-namespace: ""
+    generate.kyverno.io/rule-name: sync-secret
+    generate.kyverno.io/trigger-group: ""
+    generate.kyverno.io/trigger-version: v1
+    generate.kyverno.io/trigger-kind: Namespace
+    generate.kyverno.io/trigger-namespace: ""
+    generate.kyverno.io/trigger-name: internal-label-provenance-tenant
+stringData:
+  value: spoofed

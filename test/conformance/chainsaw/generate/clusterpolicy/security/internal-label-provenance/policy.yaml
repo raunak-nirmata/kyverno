@@ -1,0 +1,24 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: internal-label-provenance
+spec:
+  rules:
+  - name: sync-secret
+    match:
+      any:
+      - resources:
+          kinds:
+          - Namespace
+          selector:
+            matchLabels:
+              test.kyverno.io/internal-label-provenance: "true"
+    generate:
+      apiVersion: v1
+      kind: Secret
+      name: synchronized
+      namespace: "{{ request.object.metadata.name }}"
+      synchronize: true
+      clone:
+        namespace: internal-label-provenance-source
+        name: source

@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: source
+  namespace: internal-label-provenance-source
+  labels:
+    generate.kyverno.io/clone-source: ""
+data:
+  value: c291cmNl

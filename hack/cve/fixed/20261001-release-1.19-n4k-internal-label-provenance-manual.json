@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "tag_scanned": "none",
+  "release_branch": "release-1.19-n4k",
+  "generated_at": "2026-10-06T13:43:20Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-hg5v-hwm3-956r",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "1.19.x on release-1.19-n4k before 30a4abd306e8772cd2a2c0c2b804eddacf743bf7",
+      "fixed": "unreleased (release-1.19-n4k)",
+      "images": [
+        "kyverno",
+        "background-controller"
+      ],
+      "notes": "Controller-issued HMAC provenance binds persisted target and policy UIDs to generation routing metadata. Non-trigger admission, clone-source traversal, policy reconciliation, and cleanup reject unsigned or forged candidates; queued requests retain policy identity and cleanup uses UID/resourceVersion preconditions. User-owned clone-source restores and standalone managed-by labels remain compatible. Preserve the installation key across upgrades; unsigned older downstreams require a trusted trigger event or explicit generateExisting re-evaluation. This records the unreleased release-1.19-n4k fix for the 1.19.2 security workstream; no patched enterprise tag or public release is asserted. Hold public docs until advisory disclosure. Fix PR: https://github.com/nirmata/enterprise-kyverno/pull/1087. Fixed by commit 30a4abd306e8772cd2a2c0c2b804eddacf743bf7"
+    }
+  ]
+}
