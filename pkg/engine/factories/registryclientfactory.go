@@ -9,6 +9,7 @@ import (
 	"github.com/kyverno/kyverno/pkg/engine/adapters"
 	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
 	"github.com/kyverno/kyverno/pkg/registryclient"
+	kubeutils "github.com/kyverno/kyverno/pkg/utils/kube"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 )
 
@@ -110,12 +111,8 @@ func (f *registryClientFactory) GetClient(ctx context.Context, creds *kyvernov1.
 func prefixSecretNamespaces(secrets []string, defaultNamespace string) []string {
 	prefixed := make([]string, len(secrets))
 	for i, s := range secrets {
-		s = strings.TrimPrefix(s, "/")
-		if strings.Contains(s, "/") {
-			prefixed[i] = s
-		} else {
-			prefixed[i] = defaultNamespace + "/" + s
-		}
+		namespace, name := kubeutils.ParseSecretReference(s, defaultNamespace)
+		prefixed[i] = namespace + "/" + name
 	}
 	return prefixed
 }

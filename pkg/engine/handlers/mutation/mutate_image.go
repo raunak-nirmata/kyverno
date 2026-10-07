@@ -113,7 +113,13 @@ func (h mutateImageHandler) Process(
 	var patches []jsonpatch.JsonPatchOperation
 	// for each rule in the image verify rules we extracted
 	for _, imageVerify := range ruleCopy.VerifyImages {
-		rclient, err := h.rclientFactory.GetClient(ctx, imageVerify.ImageRegistryCredentials, resourceNamespace, imagePullSecrets)
+		credentials, err := handlers.ScopeImageRegistryCredentials(policyContext.Policy(), imageVerify.ImageRegistryCredentials)
+		if err != nil {
+			return resource, handlers.WithResponses(
+				engineapi.RuleError(rule.Name, engineapi.ImageVerify, "invalid registry credential scope", err, rule.ReportProperties),
+			)
+		}
+		rclient, err := h.rclientFactory.GetClient(ctx, credentials, resourceNamespace, imagePullSecrets)
 		if err != nil {
 			return resource, handlers.WithResponses(
 				engineapi.RuleError(rule.Name, engineapi.ImageVerify, "failed to fetch secrets", err, rule.ReportProperties),

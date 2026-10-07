@@ -186,7 +186,11 @@ func (h validateImageHandler) validateImage(
 		return engineapi.RuleStatusFail, fmt.Errorf("rule requires image verification but configures no attestors or attestations: %s", image)
 	}
 
-	rclient, err := h.rclientFactory.GetClient(ctx, imageVerify.ImageRegistryCredentials, resourceNamespace, imagePullSecrets)
+	credentials, err := handlers.ScopeImageRegistryCredentials(policyContext.Policy(), imageVerify.ImageRegistryCredentials)
+	if err != nil {
+		return engineapi.RuleStatusError, fmt.Errorf("invalid registry credential scope for %s: %w", image, err)
+	}
+	rclient, err := h.rclientFactory.GetClient(ctx, credentials, resourceNamespace, imagePullSecrets)
 	if err != nil {
 		return engineapi.RuleStatusError, fmt.Errorf("failed to fetch registry credentials for %s: %w", image, err)
 	}

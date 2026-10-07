@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "tag_scanned": "v1.19.2-n4k.nirmata.1",
+  "release_branch": "release-1.19-n4k",
+  "generated_at": "2026-10-06T12:18:57Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-gm4r-g7rh-3pjj",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "< 1.19.2",
+      "fixed": "1.19.2",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "Namespace confinement now covers legacy Policy imageRegistry context and verifyImages credentials, NamespacedImageValidatingPolicy credentials, and static or dynamically supplied attestor signature pull secrets. Bare names resolve in the policy namespace; foreign references and missing or malformed policy scope fail closed at admission and runtime, before credential access or cached verification. Cluster-scoped behavior remains unchanged (enterprise commit 65ba9a4b9a190372d1a9d2272544c236315435e3). Admission now checks every submitted rule before warning-only returns and autogen filtering, including credentials in recursive foreach and mutation-target contexts (enterprise follow-up commit 436ad82a77429c4fe48b6195b1c45103af6d68d4)."
+    },
+    {
+      "id": "GHSA-f5c5-qwxq-xg9r",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "< 1.19.2",
+      "fixed": "1.19.2",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "Namespaced Policy named and selector-based CEL parameter references default to and remain within the policy namespace, and cluster-scoped parameter kinds are rejected at admission and runtime. The shared exported collector now requires explicit policy scope and rejects missing or malformed scope before discovery or parameter reads, while preserving native Kubernetes VAP/MAP semantics (enterprise commits 2c14ae686066517f994813166d36cc4252d005f8 and 65ba9a4b9a190372d1a9d2272544c236315435e3). Admission now resolves the exact requested served API version and kind, rejects nonpreferred cluster-scoped versions, refreshes stale discovery once, and fails closed when scope cannot be resolved while allowing same-kind namespaced resources in distinct API groups (enterprise follow-up commit 436ad82a77429c4fe48b6195b1c45103af6d68d4)."
+    },
+    {
+      "id": "GHSA-57hf-r692-6vrx",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": "< 1.19.2",
+      "fixed": "1.19.2",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "Namespaced Policy globalReference access remains rejected at both admission and runtime. The shared context loader factory now also rejects nil policies and missing or malformed policy namespaces before initialization or entry loading, closing the empty-scope bypass (enterprise commits 9538456f5, 2c14ae686066517f994813166d36cc4252d005f8, and 65ba9a4b9a190372d1a9d2272544c236315435e3). Admission also rejects globalReference in recursive foreach and mutation-target contexts before warning-only returns or autogen filtering can skip a submitted rule (enterprise follow-up commit 436ad82a77429c4fe48b6195b1c45103af6d68d4)."
+    }
+  ]
+}

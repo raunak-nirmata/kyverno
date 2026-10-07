@@ -2,11 +2,14 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
 	enginecontext "github.com/kyverno/kyverno/pkg/engine/context"
 	"github.com/kyverno/kyverno/pkg/engine/jmespath"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 type RegistryClientFactory interface {
@@ -21,6 +24,25 @@ type Initializer = func(jsonContext enginecontext.Interface) error
 type PolicyScope interface {
 	metav1.Object
 	IsNamespaced() bool
+}
+
+// PolicyNamespace returns the confinement namespace for a policy. An empty
+// namespace is valid only for an explicitly cluster-scoped policy.
+func PolicyNamespace(policy PolicyScope) (string, error) {
+	if policy == nil || (reflect.ValueOf(policy).Kind() == reflect.Pointer && reflect.ValueOf(policy).IsNil()) {
+		return "", fmt.Errorf("policy scope must not be nil")
+	}
+	if !policy.IsNamespaced() {
+		return "", nil
+	}
+	namespace := policy.GetNamespace()
+	if namespace == "" {
+		return "", fmt.Errorf("policy namespace must not be empty")
+	}
+	if len(validation.IsDNS1123Label(namespace)) != 0 {
+		return "", fmt.Errorf("policy namespace %q is invalid", namespace)
+	}
+	return namespace, nil
 }
 
 // ContextLoaderFactory provides a ContextLoader given a policy context and rule name
