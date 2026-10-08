@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/kyverno/kyverno/api/kyverno"
@@ -35,7 +36,13 @@ import (
 // in the controller main functions
 var LibraryContext Context
 
+// libraryContextLock guards the lazy fallback below. Policy compilation calls
+// GetLibsCtx, and compilation runs concurrently, so the check-then-write raced.
+var libraryContextLock sync.Mutex
+
 func GetLibsCtx() Context {
+	libraryContextLock.Lock()
+	defer libraryContextLock.Unlock()
 	if LibraryContext == nil {
 		klog.V(2).Info("global library context was nil, setting to a fake context. If a real context is needed ensure that the variable is set")
 		LibraryContext = NewFakeContextProvider()
