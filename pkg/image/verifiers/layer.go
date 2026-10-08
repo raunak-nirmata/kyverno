@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/klauspost/compress/zstd"
@@ -15,6 +17,11 @@ var (
 	gzipMagic = []byte{0x1f, 0x8b}
 	zstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
 )
+
+// ErrLayerTooLarge marks a read refused by the size limit rather than by malformed
+// content, so callers that skip unreadable referrers can still surface the refusal:
+// a bundle or attestation rejected for size is an operator problem, not a non-match.
+var ErrLayerTooLarge = errors.New("layer exceeds the configured size limit")
 
 // ReadLayerLimited reads a layer's contents through a decompressor whose window and output are both bounded by maxSize, rejecting oversized or over-window content.
 func ReadLayerLimited(layer v1.Layer, maxSize int64) ([]byte, error) {
@@ -27,7 +34,7 @@ func ReadLayerLimited(layer v1.Layer, maxSize int64) ([]byte, error) {
 		return nil, err
 	}
 	if size > maxSize {
-		return nil, fmt.Errorf("layer size %d exceeds %d", size, maxSize)
+		return nil, fmt.Errorf("%w: layer size %d exceeds %d", ErrLayerTooLarge, size, maxSize)
 	}
 
 	rc, err := layer.Compressed()
@@ -59,12 +66,21 @@ func ReadLayerLimited(layer v1.Layer, maxSize int64) ([]byte, error) {
 		reader = br
 	}
 
-	b, err := io.ReadAll(io.LimitReader(reader, maxSize+1))
+	// Read one byte past the limit to tell "exactly at the limit" from "over it",
+	// without letting maxSize+1 wrap when maxSize is at the top of the range.
+	probe := maxSize
+	if probe < math.MaxInt64 {
+		probe++
+	}
+	b, err := io.ReadAll(io.LimitReader(reader, probe))
 	if err != nil {
+		if errors.Is(err, zstd.ErrWindowSizeExceeded) {
+			return nil, fmt.Errorf("%w: %w", ErrLayerTooLarge, err)
+		}
 		return nil, fmt.Errorf("failed to read layer: %w", err)
 	}
 	if int64(len(b)) > maxSize {
-		return nil, fmt.Errorf("uncompressed layer size exceeds %d", maxSize)
+		return nil, fmt.Errorf("%w: uncompressed layer size exceeds %d", ErrLayerTooLarge, maxSize)
 	}
 	return b, nil
 }

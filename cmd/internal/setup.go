@@ -14,6 +14,7 @@ import (
 	"github.com/kyverno/kyverno/pkg/config"
 	"github.com/kyverno/kyverno/pkg/engine/jmespath"
 	imageverifycache "github.com/kyverno/kyverno/pkg/image/verification/cache"
+	"github.com/kyverno/kyverno/pkg/image/verifiers"
 	"github.com/kyverno/kyverno/pkg/metrics"
 	"github.com/kyverno/kyverno/pkg/registryclient"
 	reportutils "github.com/kyverno/kyverno/pkg/utils/report"
@@ -79,6 +80,8 @@ func Setup(config Configuration, name string, skipResourceFilters bool) (context
 	var registrySecretLister corev1listers.SecretLister
 	if config.UsesRegistryClient() {
 		registryClient, registrySecretLister = setupRegistryClient(ctx, logger, client)
+		verifiers.SetPayloadLimit(imageVerifyPayloadLimit)
+		logger.V(2).Info("image verification payload limit", "bytes", verifiers.PayloadLimit())
 	}
 	var imageVerifyCache imageverifycache.Client
 	if config.UsesImageVerifyCache() {

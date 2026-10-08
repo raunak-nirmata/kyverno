@@ -64,7 +64,7 @@ const (
 	// type, content that is not a bundle
 	decoyBundleJSON = `{"not":"a real sigstore bundle"}`
 
-	// inflates past maxBundleLayerSize from a few KB on the wire
+	// inflates past the payload limit from a few KB on the wire
 	oversizedPlaintext = 256 << 20
 
 	// detection must stay bounded well below the inflated layer size

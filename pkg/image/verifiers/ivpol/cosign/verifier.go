@@ -59,9 +59,6 @@ func (v *Verifier) buildCheckOptsWithBundleDetection(ctx context.Context, attest
 // sigstoreBundleMediaTypePrefix identifies the layer of a cosign v3 bundle referrer.
 const sigstoreBundleMediaTypePrefix = "application/vnd.dev.sigstore.bundle"
 
-// maxBundleLayerSize bounds a bundle layer read, matching the limit used for other registry reads.
-const maxBundleLayerSize = int64(10 * 1000 * 1000)
-
 // parseBundleLayer applies cosign's own bundle acceptance check to layer bytes already
 // read under a size limit, returning nil if the content is not a usable v0.3+ bundle.
 func parseBundleLayer(layerBytes []byte) *sgbundle.Bundle {
@@ -114,8 +111,15 @@ func loadBundles(ref name.Reference, registryClientOpts []ociremote.Option) ([]*
 		}
 		// anything unreadable or unparseable within the limit is not a v3 bundle, so
 		// verification falls back to the v2 path instead of denying the request
-		bundleBytes, err := verifiers.ReadLayerLimited(layers[0], maxBundleLayerSize)
+		bundleBytes, err := verifiers.ReadLayerLimited(layers[0], verifiers.PayloadLimit())
 		if err != nil {
+			// A referrer refused for size carries the bundle media type, so it was
+			// meant to be a bundle: say so at a level the operator actually sees,
+			// otherwise verification just reports "no matching signatures".
+			if errors.Is(err, verifiers.ErrLayerTooLarge) {
+				bundleDetectLog.Info("skipping bundle referrer: exceeds the payload limit, raise --imageVerifyPayloadLimit to accept it", "digest", result.Digest.String(), "reason", err.Error())
+				continue
+			}
 			bundleDetectLog.V(2).Info("skipping referrer", "digest", result.Digest.String(), "reason", err.Error())
 			continue
 		}
