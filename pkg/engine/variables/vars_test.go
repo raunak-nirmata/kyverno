@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	v1 "github.com/kyverno/kyverno/api/kyverno/v1"
@@ -1636,4 +1637,52 @@ func Test_SubstitutionOutputSizeBoundsWholeLeafForm(t *testing.T) {
 
 	_, err := SubstituteAll(logr.Discard(), ctx, doc)
 	assert.ErrorContains(t, err, "exceeded the maximum substituted output size")
+}
+
+// Test_SubstitutionManyTokensPerLeafIsCorrect pins that a leaf carrying many
+// tokens resolves every one correctly, both adjacent and separated by text.
+// The substitution loop resolves a whole pass of tokens at once rather than one
+// per full-string rescan; this guards that batching keeps per-token semantics.
+func Test_SubstitutionManyTokensPerLeafIsCorrect(t *testing.T) {
+	ctx := context.NewContext(jp)
+	assert.NilError(t, context.AddJSONObject(ctx, map[string]interface{}{"a": "A", "b": "B"}))
+
+	const n = 1000
+	adjacent := strings.Repeat("{{ a }}", n)
+	out, err := SubstituteAll(logr.Discard(), ctx, adjacent)
+	assert.NilError(t, err)
+	assert.Equal(t, out, strings.Repeat("A", n))
+
+	separated := strings.Repeat("{{ a }}-{{ b }}|", n)
+	out, err = SubstituteAll(logr.Discard(), ctx, separated)
+	assert.NilError(t, err)
+	assert.Equal(t, out, strings.Repeat("A-B|", n))
+}
+
+// Test_SubstitutionCostIsNotQuadratic guards the substitution loop against the
+// O(tokens x length) shape it once had, where a full-string rescan ran per
+// token. A leaf of many tokens whose combined output stays under the size cap
+// must still complete in roughly linear time. The bound is deliberately loose
+// so it is not timing-flaky: the quadratic form took tens of seconds at 3 MiB
+// where the linear form takes well under a second.
+func Test_SubstitutionCostIsNotQuadratic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("timing-sensitive; skipped under -short")
+	}
+	ctx := context.NewContext(jp)
+	chunk := strings.Repeat("a", 5000)
+	assert.NilError(t, context.AddJSONObject(ctx, map[string]interface{}{"c": chunk}))
+
+	// ~3 MiB of output across ~629 tokens, well under the 10 MiB cap.
+	leaf := strings.Repeat("{{ c }}", 629)
+
+	start := time.Now()
+	out, err := SubstituteAll(logr.Discard(), ctx, leaf)
+	elapsed := time.Since(start)
+
+	assert.NilError(t, err)
+	assert.Equal(t, len(out.(string)), 629*5000)
+	if elapsed > 10*time.Second {
+		t.Fatalf("substitution of %d tokens took %s, expected roughly linear (quadratic regression?)", 629, elapsed)
+	}
 }
