@@ -713,7 +713,7 @@ func listsRangeGuard(args []ref.Val) ref.Val {
 		return nil
 	}
 	limit := maxArgBytes() / bytesPerElement
-	if uint64(n) > limit { //nolint:gosec // n > 0 checked immediately above
+	if uint64(n) > limit {
 		return guardError("lists.range(%d) produces more than the %d-element cap", int64(n), limit)
 	}
 	return nil

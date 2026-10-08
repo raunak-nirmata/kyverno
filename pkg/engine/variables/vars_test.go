@@ -1682,7 +1682,16 @@ func Test_SubstitutionCostIsNotQuadratic(t *testing.T) {
 
 	assert.NilError(t, err)
 	assert.Equal(t, len(out.(string)), 629*5000)
-	if elapsed > 10*time.Second {
-		t.Fatalf("substitution of %d tokens took %s, expected roughly linear (quadratic regression?)", 629, elapsed)
+	// Measured on this workload: linear 0.22s, the quadratic predecessor 29.4s.
+	// A flat budget cannot serve both builds -- 10s is below the instrumented
+	// linear cost on a CI runner (10.17s), and anything high enough to clear that
+	// stops catching a 29.4s quadratic. So scale with the instrumentation instead:
+	// CI runs `go test -race -covermode atomic`, roughly 20x uninstrumented.
+	budget := 10 * time.Second
+	if raceEnabled {
+		budget = 120 * time.Second
+	}
+	if elapsed > budget {
+		t.Fatalf("substitution of %d tokens took %s (budget %s), expected roughly linear (quadratic regression?)", 629, elapsed, budget)
 	}
 }
