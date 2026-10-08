@@ -71,6 +71,8 @@ var (
 	// cleanupServer port and host for listening address
 	cleanupServerHost string
 	cleanupServerPort int
+	// image verify payload limit
+	imageVerifyPayloadLimit int64
 	// image verify cache
 	imageVerifyCacheEnabled     bool
 	imageVerifyCacheTTLDuration time.Duration
@@ -169,6 +171,7 @@ func initRegistryClientFlags() {
 	flag.StringVar(&registryCredentialHelpers, "registryCredentialHelpers", "", "Credential helpers to enable (default,google,amazon,azure,github). No helpers are added when this flag is empty.")
 	flag.StringVar(&privateRegistryAllowlist, "privateRegistryAllowlist", "", "Comma-separated exact registry hostnames, IP addresses, or CIDRs permitted to reach private addresses in enforce mode. Metadata and other unsafe addresses remain blocked.")
 	flag.StringVar(&privateRegistryEgressMode, "privateRegistryEgressMode", "audit", "Private registry egress policy: audit permits private addresses and logs requests enforce would block; enforce requires an allowlist entry. Both modes always block metadata and other unsafe addresses.")
+	flag.Int64Var(&imageVerifyPayloadLimit, "imageVerifyPayloadLimit", 0, "Maximum decompressed size in bytes of a signature, attestation or bundle payload read during image verification. Raise it to verify payloads larger than the 10000000 byte default, such as large SBOM attestations. 0 keeps the default.")
 }
 
 func initImageVerifyCacheFlags() {
