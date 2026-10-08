@@ -35,7 +35,7 @@ require (
 	github.com/kyverno/go-jmespath v0.4.1-0.20231124160150-95e59c162877
 	github.com/kyverno/kyverno-authz v0.4.1-0.20260701230957-9101a3ffd44f
 	github.com/kyverno/playground/backend v0.0.0-20251124111549-b7997c02bca2
-	github.com/kyverno/sdk v0.0.0-20261006134259-1bb4a10baa75
+	github.com/kyverno/sdk v0.0.0-20261008171927-5a61cbc9e077
 	github.com/lensesio/tableprinter v0.0.0-20201125135848-89e81fc956e7
 	github.com/nirmata/license-guardian v0.0.19
 	github.com/notaryproject/notation-core-go v1.3.0
