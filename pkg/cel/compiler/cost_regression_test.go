@@ -407,3 +407,157 @@ func TestRegressionZeroArgCallDoesNotPanic(t *testing.T) {
 // resource refusal instead of absorbing it into orValue's default. That compatibility macro
 // exists only on branches that ship cel-go v0.28 or later; this branch is on v0.27, where
 // orValue still returns the concrete value itself, so there is no such binding to test.
+
+// lists.range(n) materializes one element per requested index from a single integer
+// argument: the result, not the argument, is what grows, so the generic rule's result term
+// is charged only after the allocation has already happened. On this branch cel-go has no
+// cap of its own behind the guard, so without listsRangeGuard the whole list is built and
+// only then refused by the per-program cost limit -- unbounded allocation from an integer
+// literal that needs no input resource. The guard refuses the call before it runs.
+func TestRegressionListsRangeAllocation(t *testing.T) {
+	env := regressionEnv(t)
+	err, cost, allocDelta := evalRegression(t, env,
+		`size(lists.range(60000000)) >= 0`,
+		map[string]any{"object": map[string]any{}},
+	)
+	if err == nil {
+		t.Fatalf("expected a refusal, got none (cost=%d, alloc=%d)", cost, allocDelta)
+	}
+	// The guard's own cap text, not just "any error": the per-program cost limit refuses
+	// the same expression too, but only after the list has been built, so a bare
+	// IsResourceError check stays green with the guardTable row deleted.
+	if !strings.Contains(err.Error(), "element cap") {
+		t.Fatalf("expected the element-cap guard refusal specifically, got: %v", err)
+	}
+	if !IsResourceError(err) {
+		t.Fatalf("expected a resource error, got: %v", err)
+	}
+	if allocDelta > 100<<20 {
+		t.Fatalf("allocation = %d bytes (%.1f MB), want < 100 MB (unbounded it reaches >2 GB at this n)", allocDelta, float64(allocDelta)/(1<<20))
+	}
+	t.Logf("lists.range(60000000): err=%v cost=%d allocDelta=%d bytes (%.2f MB)", err, cost, allocDelta, float64(allocDelta)/(1<<20))
+
+	// Negative control: a small range still evaluates. This is what proves the guard
+	// bounds the function rather than disabling it.
+	err, _, _ = evalRegression(t, env, `size(lists.range(1000)) == 1000`, map[string]any{"object": map[string]any{}})
+	if err != nil {
+		t.Fatalf("lists.range(1000) should evaluate cleanly, got: %v", err)
+	}
+}
+
+// TestRegressionListsRangeGuardIsLoadBearing is the negative control
+// (disabledGuardForTest): with the "lists.range" guard disabled, nothing stops the
+// allocation -- the list is built in full and the per-program cost limit refuses only
+// afterwards, at orders of magnitude more allocation. That contrast, not the presence of an
+// error, is what proves the guard is what keeps the allocation small. n is lowered here
+// from the main test's 60,000,000 so the unguarded run stays cheap enough for CI under
+// -race (whose shadow memory multiplies it) while still allocating far above the 100 MB
+// floor below and being charged far over the per-program cost limit.
+func TestRegressionListsRangeGuardIsLoadBearing(t *testing.T) {
+	env := regressionEnv(t)
+
+	SetDisabledGuardForTest("lists.range")
+	defer SetDisabledGuardForTest("")
+
+	err, cost, allocDelta := evalRegression(t, env,
+		`size(lists.range(5000000)) >= 0`,
+		map[string]any{"object": map[string]any{}},
+	)
+	if err != nil && strings.Contains(err.Error(), "element cap") {
+		t.Fatalf("guard fired even though it was disabled for this test -- disabledGuardForTest is not wired into listsRangeGuard")
+	}
+	if allocDelta < 100<<20 {
+		t.Fatalf("with the guard disabled, allocation = %d bytes (%.1f MB), want >= 100 MB -- if this is small, something other than the guard is bounding the call and the main test is not a real detector", allocDelta, float64(allocDelta)/(1<<20))
+	}
+	t.Logf("lists.range(5000000) with the guard disabled: err=%v cost=%d allocDelta=%d bytes (%.2f MB) -- with the guard installed the same shape at 12x the n stays under 100 MB (see TestRegressionListsRangeAllocation)", err, cost, allocDelta, float64(allocDelta)/(1<<20))
+}
+
+// TestRegressionSizeOnAStringIsCharged pins that size() is priced for the scan it performs.
+// size() is on the exemption list because it allocates nothing and returns an int, which
+// holds for lists, maps and bytes but not for a string: types.String.Size() is
+// len([]rune(s)). Before this was charged, a comprehension calling size() on a 1 MiB string
+// 20,000 times burned seconds of CPU for 200,003 units of a 1,000,000 limit and was
+// admitted. Allocation is zero throughout, so an assertion on TotalAlloc cannot see it --
+// this test asserts on charge and on refusal instead.
+func TestRegressionSizeOnAStringIsCharged(t *testing.T) {
+	env := regressionEnv(t)
+	big := strings.Repeat("a", 1<<20)
+	idx := make([]any, 20000)
+	for i := range idx {
+		idx[i] = i
+	}
+
+	err, cost, _ := evalRegression(t, env,
+		`object.idx.all(i, object.a.size() > 0)`,
+		map[string]any{"object": map[string]any{"a": big, "idx": idx}},
+	)
+	if err == nil {
+		t.Fatalf("expected the repeated scan to be refused, got none (cost=%d)", cost)
+	}
+	if !IsResourceError(err) {
+		t.Fatalf("expected a resource error, got: %v", err)
+	}
+	t.Logf("20,000 x size() on 1 MiB: cost=%d err=%v", cost, err)
+
+	// A single scan is charged in proportion to it rather than refused: about 0.1 units per
+	// byte, the generic rule's argument rate.
+	err, cost, _ = evalRegression(t, env, `object.a.size() > 0`,
+		map[string]any{"object": map[string]any{"a": big}})
+	if err != nil {
+		t.Fatalf("a single size() on 1 MiB must still evaluate, got: %v", err)
+	}
+	if cost < 100_000 || cost > 110_000 {
+		t.Fatalf("expected roughly 0.1 units per byte for a 1 MiB scan, got cost=%d", cost)
+	}
+
+	// The controls that keep this from becoming a false deny: Size() on a list, a map and a
+	// bytes value is a length read, not a scan, and must stay O(1).
+	for _, c := range []struct {
+		name string
+		expr string
+		vars map[string]any
+	}{
+		{"list", `object.idx.size() > 0`, map[string]any{"object": map[string]any{"idx": idx}}},
+		{"small string", `object.s.size() > 0`, map[string]any{"object": map[string]any{"s": "hello"}}},
+	} {
+		err, cost, _ := evalRegression(t, env, c.expr, c.vars)
+		if err != nil {
+			t.Fatalf("size() on a %s must still evaluate, got: %v", c.name, err)
+		}
+		if cost > 100 {
+			t.Fatalf("size() on a %s must stay O(1), got cost=%d", c.name, cost)
+		}
+	}
+}
+
+// TestRegressionSplitGuardCountsPieces pins that splitGuard counts the pieces a split will
+// actually produce instead of assuming every separator-length window is a separator. The
+// assumed form denied an ordinary 640 KiB file with 64 lines, reporting 655,360 pieces, and
+// the user saw the cost text in place of the policy's own message.
+func TestRegressionSplitGuardCountsPieces(t *testing.T) {
+	env := regressionEnv(t)
+	conf := strings.Repeat(strings.Repeat("x", 10000)+"\n", 64) // 640 KiB, 64 lines
+	dense := strings.Repeat(",", 700_000)                       // genuinely over the cap
+
+	err, cost, _ := evalRegression(t, env, `object.c.split("\n").size() <= 1000`,
+		map[string]any{"object": map[string]any{"c": conf}})
+	if err != nil {
+		t.Fatalf("a 640 KiB file with 64 lines must not be refused, got: %v (cost=%d)", err, cost)
+	}
+
+	// The bound itself must be unchanged: input that really does produce more pieces than
+	// the cap is still refused before the split runs.
+	for _, c := range []struct{ name, expr string }{
+		{"dense separator", `object.d.split(",").size() >= 0`},
+		{"empty separator", `object.d.split("").size() >= 0`},
+	} {
+		err, _, alloc := evalRegression(t, env, c.expr,
+			map[string]any{"object": map[string]any{"d": dense}})
+		if err == nil || !strings.Contains(err.Error(), "over the") {
+			t.Fatalf("%s: expected the piece-cap refusal, got: %v", c.name, err)
+		}
+		if alloc > 16<<20 {
+			t.Fatalf("%s: refusal must arrive before the split allocates, got %.1f MB", c.name, float64(alloc)/(1<<20))
+		}
+	}
+}
