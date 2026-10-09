@@ -14,8 +14,8 @@
       "action": "Code change",
       "status": "fixed",
       "pkg": "github.com/kyverno/kyverno",
-      "installed": "1.19.x on release-1.19-n4k before 7db8081ddc2b4d2d823ccc095a8a8a64d6478070",
-      "fixed": "unreleased (release-1.19-n4k)",
+      "installed": ">= 1.19.0, < v1.19.0-n4k.nirmata.2",
+      "fixed": "v1.19.0-n4k.nirmata.2",
       "images": [
         "kyverno",
         "cleanup-controller"
