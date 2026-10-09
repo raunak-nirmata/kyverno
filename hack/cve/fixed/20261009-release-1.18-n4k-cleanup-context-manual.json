@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "tag_scanned": "none",
+  "release_branch": "release-1.18-n4k",
+  "generated_at": "2026-10-09T00:00:00Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-p58h-r4j3-h5vx",
+      "severity": "CRITICAL",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": ">= 1.18.0, < v1.18.0-n4k.nirmata.7",
+      "fixed": "v1.18.0-n4k.nirmata.7",
+      "images": [
+        "kyverno",
+        "cleanup-controller"
+      ],
+      "notes": "The cleanup controller built its context loader without the policy's own scope, so a namespaced CleanupPolicy's context entries were treated as cluster scoped and were not confined to the policy's namespace. The fix passes the real policy to the context loader factory, so a namespaced CleanupPolicy resolves apiCall and configMap context only within its own namespace, and rejects global references at both admission and runtime. Enterprise commits a873f7fa22 and 2516b33c57 on this branch."
+    },
+    {
+      "id": "GHSA-rcxg-3f92-3mgr",
+      "severity": "CRITICAL",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": ">= 1.18.0, < v1.18.0-n4k.nirmata.7",
+      "fixed": "v1.18.0-n4k.nirmata.7",
+      "images": [
+        "kyverno",
+        "cleanup-controller"
+      ],
+      "notes": "A namespaced CleanupPolicy could issue apiCall context requests to paths outside its own namespace. The fix validates the apiCall path and confines it to the policy's namespace, rejecting cross-namespace and cluster-scoped requests before they are sent. Cluster-scoped CleanupPolicy behavior is unchanged. Enterprise commits a873f7fa22 and 2516b33c57 on this branch."
+    }
+  ]
+}
