@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "tag_scanned": "none",
+  "release_branch": "release-1.19-n4k",
+  "generated_at": "2026-10-09T00:00:00Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-f96w-622v-rqpq",
+      "severity": "CRITICAL",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": ">= 1.19.0, < v1.19.0-n4k.nirmata.2",
+      "fixed": "v1.19.0-n4k.nirmata.2",
+      "images": [
+        "kyverno",
+        "background-controller"
+      ],
+      "notes": "A namespaced MutatingPolicy's mutate-existing CEL target expression was trusted without confinement, so it could resolve targets in another namespace or cluster-scoped kinds. The fix reports the REST scope of each resolved target and rejects any target that is cluster scoped or outside the policy's namespace before the resource is re-fetched or written. Enterprise commit 74aae2792b."
+    },
+    {
+      "id": "GHSA-jcw5-3wcg-fqx5",
+      "severity": "CRITICAL",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": ">= 1.19.0, < v1.19.0-n4k.nirmata.2",
+      "fixed": "v1.19.0-n4k.nirmata.2",
+      "images": [
+        "kyverno",
+        "background-controller"
+      ],
+      "notes": "A namespaced MutatingPolicy's mutate-existing targets could redirect a write to a resource in another namespace by rewriting the mutated object's identity. The fix rejects any patch whose namespace, kind, apiVersion, or name does not match the object it is meant to patch, and filters resource-rule targets by REST scope. Enterprise commit 74aae2792b."
+    },
+    {
+      "id": "GHSA-vm98-8c25-h274",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": ">= 1.19.0, < v1.19.0-n4k.nirmata.2",
+      "fixed": "v1.19.0-n4k.nirmata.2",
+      "images": [
+        "kyverno",
+        "background-controller"
+      ],
+      "notes": "A namespaced MutatingPolicy's mutate-existing resource-rule targets were not confined to the policy's namespace, so the background controller could attempt writes outside it with its own service account. The fix decides target scope by REST mapping, skips non-namespaced kinds, lists a cluster-scoped kind at most once, and fails closed when a kind has no REST mapping. Enterprise commit 74aae2792b."
+    }
+  ]
+}
