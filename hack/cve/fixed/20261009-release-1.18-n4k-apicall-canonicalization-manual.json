@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "tag_scanned": "none",
+  "release_branch": "release-1.18-n4k",
+  "generated_at": "2026-10-09T00:00:00Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-3xfv-vq8x-qhg4",
+      "severity": "CRITICAL",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": ">= 1.18.0, < v1.18.0-n4k.nirmata.7",
+      "fixed": "v1.18.0-n4k.nirmata.7",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "A namespaced Policy apiCall validated the urlPath against the whole string, query and fragment included, but executed only the parsed path, so validation and execution disagreed on the target. A decoy /namespaces/<own-namespace>/ segment hidden in a query or fragment satisfied the namespace clamp while the request reached a cluster-scoped endpoint, letting a tenant create cluster-scoped objects (for example MutatingWebhookConfigurations) as the Kyverno ServiceAccount and escalate toward cluster admin. Fixed by canonicalizing the urlPath, validating the path component alone, and executing the exact validated canonical path; the follow-up anchors the namespace clamp to the fixed path position so a positional decoy cannot satisfy it either (on this branch as 1add98850a and aeaad94044)."
+    },
+    {
+      "id": "GHSA-pcx2-xcq4-65vf",
+      "severity": "HIGH",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": ">= 1.18.0, < v1.18.0-n4k.nirmata.7",
+      "fixed": "v1.18.0-n4k.nirmata.7",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "The same validate/execute divergence in a namespaced Policy apiCall urlPath let a query- or fragment-hidden decoy namespace segment pass the namespace clamp while the request read resources in a different namespace as the Kyverno ServiceAccount. Fixed by the same canonicalize-then-validate-the-path-only change and the anchored namespace clamp (on this branch as 1add98850a and aeaad94044)."
+    }
+  ]
+}
