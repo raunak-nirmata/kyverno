@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "tag_scanned": "v1.19.0-n4k.nirmata.1",
+  "release_branch": "release-1.19-n4k",
+  "generated_at": "2026-10-07T00:00:00Z",
+  "scanners": [
+    "manual"
+  ],
+  "findings": [
+    {
+      "id": "GHSA-4pqm-wqq6-h9q2",
+      "severity": "CRITICAL",
+      "route": "code-change",
+      "action": "Code change",
+      "status": "fixed",
+      "pkg": "github.com/kyverno/kyverno",
+      "installed": ">= 1.19.0, < v1.19.0-n4k.nirmata.2",
+      "fixed": "v1.19.0-n4k.nirmata.2",
+      "images": [
+        "kyverno",
+        "background-controller",
+        "reports-controller",
+        "cleanup-controller"
+      ],
+      "notes": "Namespaced CEL policy helpers (resource.get, resource.list, and resource.post) passed their resource, group, and version arguments to the Kubernetes dynamic client, which builds the request path by joining segments. The client validates the namespace and object name but not these arguments, so a '..' or an embedded slash in the resource argument could redirect a request to another namespace or to a cluster-scoped path. Because this line ships namespaced CEL policies, a policy author confined to one namespace could reach objects in other namespaces or at cluster scope, served with the Kyverno controller's permissions. Fixed by validating every path segment derived from a policy argument and rejecting empty, '.', '..', and slash- or backslash-injected segments before any request is issued. Commit 2e1bde1d85c8719c546c338d9585a36ff8d0be6b on release-1.19-n4k."
+    }
+  ]
+}
