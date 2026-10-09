@@ -2,7 +2,7 @@
 
 Kubernetes Native Policy Management
 
-![Version: 3.9.0-rc.2](https://img.shields.io/badge/Version-3.9.0--rc.2-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v1.19.0-n4k.nirmata.1](https://img.shields.io/badge/AppVersion-v1.19.0--n4k.nirmata.1-informational?style=flat-square)
+![Version: 3.9.0-rc.3](https://img.shields.io/badge/Version-3.9.0--rc.3-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: v1.19.0-n4k.nirmata.1](https://img.shields.io/badge/AppVersion-v1.19.0--n4k.nirmata.1-informational?style=flat-square)
 
 ## About
 
@@ -1028,6 +1028,10 @@ The default audience is Kyverno-specific so leaked tokens are not accepted by th
 | reports-server.jobConfigurations.podAnnotations | object | `{}` | Pod annotations. |
 | reports-server.jobConfigurations.nodeAffinity | object | `{}` | Node affinity constraints. |
 | reports-server.jobConfigurations.securityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"privileged":false,"readOnlyRootFilesystem":true,"runAsGroup":65534,"runAsNonRoot":true,"runAsUser":65534,"seccompProfile":{"type":"RuntimeDefault"}}` | Security context for the hook containers |
+| kyverno-notation-aws.install | bool | `false` | Enable the kyverno-notation-aws subchart |
+| kyverno-notation-aws.fullnameOverride | string | `"kyverno-notation-aws"` | Keep the subchart's fullname stable regardless of release name, so its Service name (and therefore the URL customers reference from policies) does not change. |
+| kyverno-notation-aws.region | string | `"us-west-2"` | AWS region used by the notation-aws image verification service |
+| kyverno-notation-aws.license.existingSecret | string | `"kyverno-license"` | Name of the N4K license Secret to mount. This must match `kyverno.license.secretName` (see templates/config/license-helpers.tpl), which defaults to "<fullname>-license" and is release-name-scoped: it resolves to "kyverno-license" only when the release is named "kyverno" (the default) and `license.create` is left at its default. If you override the release name, or the top-level `license.name` / `license.existingSecret` values, you must update this value to match, otherwise kyverno-notation-aws mounts a Secret that does not exist (or the wrong one) and stays unlicensed. |
 
 ## Registry egress policy
 
@@ -1107,6 +1111,7 @@ Kubernetes: `>=1.25.0-0`
 |  | crds | 3.9.0 |
 |  | grafana | 3.9.0 |
 | https://kyverno.github.io/api | kyverno-api | 0.0.1-alpha.2 |
+| https://nirmata.github.io/kyverno-charts | kyverno-notation-aws | 2.0.0-rc.4 |
 | https://nirmata.github.io/kyverno-charts | reports-server | 0.2.35 |
 | https://openreports.github.io/reports-api | openreports | 0.1.0 |
 

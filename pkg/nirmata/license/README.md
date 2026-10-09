@@ -139,6 +139,15 @@ The 90% capacity warning band is `DefaultWarnRatio`.
 Unchanged from Phase 1: see the trust-root section in git history / ops docs.
 Order matters: ship the public key before signing licenses against it.
 
+`kyverno-notation-aws` (vendored as an optional subchart, see
+`charts/kyverno/values.yaml`'s `kyverno-notation-aws` block) embeds the same
+Ed25519 trust root, imported from this fork's `pkg/nirmata/license`, to verify
+its own mounted license file. A signing-key rotation therefore also requires
+rebuilding and releasing `kyverno-notation-aws` with the new public key, and
+that release must reach customers before licenses signed with the new key are
+issued to them — otherwise notation-aws rejects a validly signed license it
+cannot yet verify.
+
 ## Module access
 
 This package imports `github.com/nirmata/license-guardian/pkg/nctllicense`.
