@@ -14,8 +14,8 @@
       "action": "Code change",
       "status": "fixed",
       "pkg": "github.com/kyverno/kyverno",
-      "installed": ">= 1.18.0, < 1.18.0-n4k.nirmata.8",
-      "fixed": "1.18.0-n4k.nirmata.8",
+      "installed": ">= 1.18.0, < v1.18.0-n4k.nirmata.7",
+      "fixed": "v1.18.0-n4k.nirmata.7",
       "images": [
         "kyverno",
         "background-controller",
@@ -31,8 +31,8 @@
       "action": "Code change",
       "status": "fixed",
       "pkg": "github.com/kyverno/kyverno",
-      "installed": ">= 1.18.0, < 1.18.0-n4k.nirmata.8",
-      "fixed": "1.18.0-n4k.nirmata.8",
+      "installed": ">= 1.18.0, < v1.18.0-n4k.nirmata.7",
+      "fixed": "v1.18.0-n4k.nirmata.7",
       "images": [
         "kyverno",
         "background-controller",

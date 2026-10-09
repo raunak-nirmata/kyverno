@@ -14,8 +14,8 @@
       "action": "Code change",
       "status": "fixed",
       "pkg": "github.com/kyverno/kyverno",
-      "installed": "<= v1.18.0-n4k.nirmata.6",
-      "fixed": "next 1.18 n4k patch",
+      "installed": ">= 1.18.0, < v1.18.0-n4k.nirmata.7",
+      "fixed": "v1.18.0-n4k.nirmata.7",
       "images": [
         "kyverno"
       ],

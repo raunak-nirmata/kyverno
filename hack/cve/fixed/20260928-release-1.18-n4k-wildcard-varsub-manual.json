@@ -14,7 +14,7 @@
       "action": "Code change",
       "status": "fixed",
       "pkg": "github.com/kyverno/kyverno",
-      "installed": "< v1.18.0-n4k.nirmata.7",
+      "installed": ">= 1.18.0, < v1.18.0-n4k.nirmata.7",
       "fixed": "v1.18.0-n4k.nirmata.7",
       "images": [
         "kyverno",
@@ -31,7 +31,7 @@
       "action": "Code change",
       "status": "fixed",
       "pkg": "github.com/kyverno/kyverno",
-      "installed": "< v1.18.0-n4k.nirmata.7",
+      "installed": ">= 1.18.0, < v1.18.0-n4k.nirmata.7",
       "fixed": "v1.18.0-n4k.nirmata.7",
       "images": [
         "kyverno",
@@ -39,7 +39,7 @@
         "reports-controller",
         "cleanup-controller"
       ],
-      "notes": "Variable substitution re-scanned already-substituted text, so nested or self-referential values could drive unbounded re-scanning. Fixed by bounding substitution to the author's own template spans, with alias-hop and total-substitution limits."
+      "notes": "Variable substitution re-scanned already-substituted text, so nested or self-referential values could drive unbounded re-scanning. Fixed by bounding substitution to the author's own template spans, with alias-hop and total-substitution limits. The substitution mitigation was completed on this line in v1.18.0-n4k.nirmata.7 by two further changes: a per-document output-size cap that also accounts whole-leaf \"{ var }\" substitutions, and a rewrite that resolves each substitution pass in linear time, closing a worst case where a policy whose substituted output stayed under the size cap could still consume the admission webhook's time budget."
     },
     {
       "id": "GHSA-x4xq-p8g4-6fwg",
@@ -48,7 +48,7 @@
       "action": "Code change",
       "status": "fixed",
       "pkg": "github.com/kyverno/kyverno",
-      "installed": "< v1.18.0-n4k.nirmata.7",
+      "installed": ">= 1.18.0, < v1.18.0-n4k.nirmata.7",
       "fixed": "v1.18.0-n4k.nirmata.7",
       "images": [
         "kyverno",
@@ -65,7 +65,7 @@
       "action": "Code change",
       "status": "fixed",
       "pkg": "github.com/kyverno/kyverno",
-      "installed": "< v1.18.0-n4k.nirmata.7",
+      "installed": ">= 1.18.0, < v1.18.0-n4k.nirmata.7",
       "fixed": "v1.18.0-n4k.nirmata.7",
       "images": [
         "kyverno",

@@ -14,7 +14,7 @@
       "action": "Code change",
       "status": "fixed",
       "pkg": "github.com/kyverno/kyverno",
-      "installed": "< v1.18.0-n4k.nirmata.7",
+      "installed": ">= 1.18.0, < v1.18.0-n4k.nirmata.7",
       "fixed": "v1.18.0-n4k.nirmata.7",
       "images": [
         "kyverno",
@@ -31,7 +31,7 @@
       "action": "Code change",
       "status": "fixed",
       "pkg": "github.com/kyverno/kyverno",
-      "installed": "< v1.18.0-n4k.nirmata.7",
+      "installed": ">= 1.18.0, < v1.18.0-n4k.nirmata.7",
       "fixed": "v1.18.0-n4k.nirmata.7",
       "images": [
         "kyverno",
@@ -48,7 +48,7 @@
       "action": "Code change",
       "status": "fixed",
       "pkg": "github.com/kyverno/kyverno",
-      "installed": "< v1.18.0-n4k.nirmata.7",
+      "installed": ">= 1.18.0, < v1.18.0-n4k.nirmata.7",
       "fixed": "v1.18.0-n4k.nirmata.7",
       "images": [
         "kyverno",
@@ -65,7 +65,7 @@
       "action": "Code change",
       "status": "fixed",
       "pkg": "github.com/kyverno/kyverno",
-      "installed": "< v1.18.0-n4k.nirmata.7",
+      "installed": ">= 1.18.0, < v1.18.0-n4k.nirmata.7",
       "fixed": "v1.18.0-n4k.nirmata.7",
       "images": [
         "kyverno",

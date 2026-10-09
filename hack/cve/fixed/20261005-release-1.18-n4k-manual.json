@@ -20,7 +20,7 @@
         "kyverno",
         "reports-controller"
       ],
-      "notes": "Notary attestation statement extraction checked the compressed descriptor and layer size against the 10 MB payload limit but read the decompressed predicate into memory without a bound, so an attacker-supplied referrer artifact that compresses small and expands large could exhaust admission controller memory; fixed by reading layers through a shared helper that decompresses under a bounded decoder and caps the decompressed output at the same limit (on this branch as 17fea2967)."
+      "notes": "Notary attestation statement extraction checked the compressed descriptor and layer size against the 10 MB payload limit but read the decompressed predicate into memory without a bound, so an attacker-supplied referrer artifact that compresses small and expands large could exhaust admission controller memory; fixed by reading layers through a shared helper that decompresses under a bounded decoder and caps the decompressed output at the same limit (on this branch as 17fea2967). The same payload bound was completed in v1.18.0-n4k.nirmata.7: the limit is now configurable behind --imageVerifyPayloadLimit (default unchanged at 10000000 bytes, raise-or-tighten but never disabled), so a legitimately large compressed attestation predicate can be allowed rather than refused outright; size refusals now carry a sentinel error so a refused bundle referrer is logged where an operator sees it; and the referrers index body is bounded to 1 MB before the unmarshal that allocates it, closing a path where a 34 MB index allocated roughly 400 MB while being rejected."
     },
     {
       "id": "GHSA-fr24-3hvf-393q",
@@ -35,7 +35,7 @@
         "kyverno",
         "reports-controller"
       ],
-      "notes": "Notary signature blob fetching applied the same compressed-only size check and buffered the decompressed signature layer without a bound, giving the same memory-exhaustion path during image verification; fixed by the same bounded-decoder helper, which also covers the equivalent cosign bundle read, and by rejecting a signature manifest that declares no layers instead of indexing it and panicking (on this branch as 17fea2967)."
+      "notes": "Notary signature blob fetching applied the same compressed-only size check and buffered the decompressed signature layer without a bound, giving the same memory-exhaustion path during image verification; fixed by the same bounded-decoder helper, which also covers the equivalent cosign bundle read, and by rejecting a signature manifest that declares no layers instead of indexing it and panicking (on this branch as 17fea2967). The same payload bound was completed in v1.18.0-n4k.nirmata.7: the limit is now configurable behind --imageVerifyPayloadLimit (default unchanged at 10000000 bytes, raise-or-tighten but never disabled), so a legitimately large compressed attestation predicate can be allowed rather than refused outright; size refusals now carry a sentinel error so a refused bundle referrer is logged where an operator sees it; and the referrers index body is bounded to 1 MB before the unmarshal that allocates it, closing a path where a 34 MB index allocated roughly 400 MB while being rejected."
     }
   ]
 }
