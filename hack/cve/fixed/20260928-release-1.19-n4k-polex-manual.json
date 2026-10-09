@@ -19,7 +19,7 @@
       "images": [
         "kyverno"
       ],
-      "notes": "The admission-policy generator folded PolicyExceptions into generated ValidatingAdmissionPolicy and MutatingAdmissionPolicy resources without applying the gates runtime enforcement uses, so an exception the engine would reject still took effect in the generated native policy. The generator now applies the --enablePolicyException flag, --exceptionNamespace scoping, and policyRefs kind matching, delegating to the same helpers the CEL engines call."
+      "notes": "The admission-policy generator folded PolicyExceptions into generated ValidatingAdmissionPolicy and MutatingAdmissionPolicy resources without applying the gates runtime enforcement uses, so an exception the engine would reject still took effect in the generated native policy. The generator now applies the --enablePolicyException flag, --exceptionNamespace scoping, and policyRefs kind matching, delegating to the same helpers the CEL engines call. That initial fix left a same-class sink open, closed in v1.19.0-n4k.nirmata.2: the generator rendered an exception's spec.images and spec.allowedValues into the generated policy's CEL variable expressions by string concatenation, so a value containing a single quote escaped the string literal and became expression code — a crafted entry widened the allowed-image list to whatever image was under review. Both lists are now encoded as CEL literals instead of built as expression text (PR #1290)."
     }
   ]
 }
