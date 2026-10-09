@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "tag_scanned": "v1.19.0-n4k.nirmata.1-rc.2",
+  "tag_scanned": "v1.19.0-n4k.nirmata.1",
   "release_branch": "release-1.19-n4k",
   "generated_at": "2026-09-28T00:00:00Z",
   "scanners": [
@@ -14,8 +14,8 @@
       "action": "Code change",
       "status": "fixed",
       "pkg": "github.com/kyverno/kyverno",
-      "installed": "< 1.19.2",
-      "fixed": "1.19.2",
+      "installed": ">= 1.19.0, < v1.19.0-n4k.nirmata.2",
+      "fixed": "v1.19.0-n4k.nirmata.2",
       "images": [
         "kyverno",
         "background-controller",
@@ -31,15 +31,15 @@
       "action": "Code change",
       "status": "fixed",
       "pkg": "github.com/kyverno/kyverno",
-      "installed": "< 1.19.2",
-      "fixed": "1.19.2",
+      "installed": ">= 1.19.0, < v1.19.0-n4k.nirmata.2",
+      "fixed": "v1.19.0-n4k.nirmata.2",
       "images": [
         "kyverno",
         "background-controller",
         "reports-controller",
         "cleanup-controller"
       ],
-      "notes": "Variable substitution re-scanned already-substituted text, so nested or self-referential values could drive unbounded re-scanning. Fixed by bounding substitution to the author's own template spans, with alias-hop and total-substitution limits."
+      "notes": "Variable substitution re-scanned already-substituted text, so nested or self-referential values could drive unbounded re-scanning. Fixed by bounding substitution to the author's own template spans, with alias-hop and total-substitution limits. The substitution mitigation was completed on this line by two further changes: a per-document output-size cap that also accounts whole-leaf \"{{ var }}\" substitutions, and a rewrite that resolves each substitution pass in linear time, closing a worst case where a policy whose substituted output stayed under the size cap could still consume the admission webhook's time budget."
     },
     {
       "id": "GHSA-x4xq-p8g4-6fwg",
@@ -48,8 +48,8 @@
       "action": "Code change",
       "status": "fixed",
       "pkg": "github.com/kyverno/kyverno",
-      "installed": "< 1.19.2",
-      "fixed": "1.19.2",
+      "installed": ">= 1.19.0, < v1.19.0-n4k.nirmata.2",
+      "fixed": "v1.19.0-n4k.nirmata.2",
       "images": [
         "kyverno",
         "background-controller",
@@ -65,8 +65,8 @@
       "action": "Code change",
       "status": "fixed",
       "pkg": "github.com/kyverno/kyverno",
-      "installed": "< 1.19.2",
-      "fixed": "1.19.2",
+      "installed": ">= 1.19.0, < v1.19.0-n4k.nirmata.2",
+      "fixed": "v1.19.0-n4k.nirmata.2",
       "images": [
         "kyverno",
         "background-controller",
