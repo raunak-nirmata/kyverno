@@ -1,7 +1,10 @@
 package admissionpolicy
 
 import (
+	"reflect"
 	"testing"
+
+	"github.com/google/cel-go/cel"
 
 	policiesv1beta1 "github.com/kyverno/api/api/policies.kyverno.io/v1beta1"
 	"github.com/stretchr/testify/assert"
@@ -262,4 +265,59 @@ func TestBuildMutatingAdmissionPolicyBeta_MutationTypeConversion(t *testing.T) {
 	assert.Equal(t, admissionregistrationv1beta1.PatchTypeJSONPatch, mapol2.Spec.Mutations[0].PatchType)
 	assert.NotNil(t, mapol2.Spec.Mutations[0].JSONPatch)
 	assert.Equal(t, "[{'op': 'add', 'path': '/metadata/labels/app', 'value': 'test'}]", mapol2.Spec.Mutations[0].JSONPatch.Expression)
+}
+
+func TestCELStringListLiteral_ExceptionValuesCannotInjectCEL(t *testing.T) {
+	// Each value is what a PolicyException author puts in spec.images or
+	// spec.allowedValues. None of them may become expression code.
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{"plain image reference", "ghcr.io/nirmata/kyverno:v1.19.0"},
+		{"escapes the list and widens it to the image under review", "x'] + [object.spec.containers[0].image] + ['y"},
+		{"references the object under review", "a' + object.metadata.name + '"},
+		{"evaluation-time error", "x'] + [string(1/0)] + ['y"},
+		{"unbalanced single quote", "a'"},
+		{"double quote", `weird"quote`},
+		{"backslash", `back\\slash`},
+		{"newline", "new\nline"},
+	}
+
+	env, err := cel.NewEnv(cel.Variable("object", cel.DynType))
+	assert.NoError(t, err)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			expression, err := celStringListLiteral([]string{tt.value})
+			assert.NoError(t, err)
+
+			// The rendered expression must be valid CEL, so the generated policy is
+			// always writable. The pre-fix rendering produced a syntax error for the
+			// quote, backslash and newline cases, which left a stale policy enforcing.
+			ast, issues := env.Compile(expression)
+			assert.NoError(t, issues.Err())
+
+			// It must evaluate to exactly the author's string, with nothing resolved
+			// from the object under review.
+			program, err := env.Program(ast)
+			assert.NoError(t, err)
+			out, _, err := program.Eval(map[string]any{"object": map[string]any{}})
+			assert.NoError(t, err)
+
+			native, err := out.ConvertToNative(reflect.TypeOf([]string{}))
+			assert.NoError(t, err)
+			assert.Equal(t, []string{tt.value}, native)
+		})
+	}
+}
+
+func TestCELStringListLiteral_Shapes(t *testing.T) {
+	expression, err := celStringListLiteral([]string{"a", "b"})
+	assert.NoError(t, err)
+	assert.Equal(t, `["a","b"]`, expression)
+
+	expression, err = celStringListLiteral(nil)
+	assert.NoError(t, err)
+	assert.Equal(t, "null", expression)
 }
