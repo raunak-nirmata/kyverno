@@ -16,6 +16,7 @@ env:
 jobs:
   k6:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -99,6 +100,7 @@ jobs:
 
   summary:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     needs:
       - k6
     steps:
