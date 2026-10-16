@@ -39,7 +39,14 @@ IMAGES="${IMAGES:-1 2 4 8 16}"
 DELAYS="${DELAYS:-0 25 100}"
 CACHE_MODE="${CACHE_MODE:-off}"          # off | warm | postedit
 VUS="${VUS:-20}"
-ITERATIONS="${ITERATIONS:-400}"
+# Duration, not an iteration count. A fixed count makes cell length depend on how
+# expensive the cell is: 400 iterations at +100ms with 16 images runs ~32s, but
+# the same 400 at 0ms with 1 image finishes in under a second - far too short to
+# read CPU out of Prometheus, and that cheap lane is the control the whole chart
+# leans on. A duration gives every cell the same window and makes throughput
+# (iterations completed) a second, comparable metric.
+# An integer is still accepted and means a fixed iteration count.
+LOAD="${LOAD:-60s}"
 CELL_COOLDOWN="${CELL_COOLDOWN:-60}"
 SKIP_INSTALL="${SKIP_INSTALL:-}"
 RESULTS_DIR="${RESULTS_DIR:-$HERE/results/ivpol}"
@@ -150,9 +157,50 @@ verify_ivpol_active() {
   echo "positive control OK: signed image admitted"
 }
 
-assert_registry_traffic() {
-  # $1 = cell dir, $2 = expected images per pod
+assert_cell_valid() {
+  # $1 = cell dir, $2 = images per pod
+  #
+  # Three things have to be true for a cell to be a measurement of image
+  # verification rather than a number that merely looks like one.
   local dir="$1" images="$2"
+
+  # (a) The load actually ran. With duration-based cells the iteration count is
+  #     an output, not an input, so it has to be read back rather than assumed.
+  local iters failed
+  read -r iters failed <<<"$(python3 - "$dir/k6-summary.json" <<'PY2'
+import json, sys
+try:
+    m = json.load(open(sys.argv[1]))["metrics"]
+except Exception:
+    print("0 0"); raise SystemExit
+iters = int(m.get("iterations", {}).get("count", 0))
+rate = m.get("admission_failed", {}).get("rate")
+# Older summaries without the metric report nothing rather than a false zero.
+print(f"{iters} {-1 if rate is None else rate}")
+PY2
+)"
+  echo "iterations=$iters admission_failed_rate=$failed"
+  echo "$iters" > "$dir/iterations.txt"
+  if (( iters < 1 )); then
+    echo "FATAL: the cell completed no iterations — nothing was measured."
+    exit 1
+  fi
+
+  # (b) Admission mostly succeeded. A failed request still completes an
+  #     iteration, and the failure path is usually *faster* than verification,
+  #     so a saturated or broken cell reports a better latency than a healthy
+  #     one. Outside the concurrency ramp - which is defined by driving this up
+  #     on purpose - a cell with real failures is not comparable.
+  if [[ "$failed" != "-1" ]] && [[ "${ALLOW_FAILURES:-}" != "1" ]]; then
+    python3 -c "import sys; sys.exit(0 if float('$failed') <= 0.01 else 1)" || {
+      echo "FATAL: admission failure rate ${failed} exceeds 1%."
+      echo "       Latency here is the failure path, not verification. Set ALLOW_FAILURES=1"
+      echo "       only for the concurrency ramp, where saturation is the point."
+      exit 1
+    }
+  fi
+
+  # (c) Verification really reached the registry.
   local stats manifests total
   stats="$(registry_ctl stats 2>/dev/null | tail -1)"
   echo "$stats" > "$dir/registry-stats.json"
@@ -165,25 +213,24 @@ except Exception: print(0)' 2>/dev/null)
   echo "registry requests: total=$total manifests=$manifests"
 
   # Hard floor: at least one manifest fetch per admission request. Below this,
-  # verification did not happen for most requests and the cell is not a
-  # measurement of image verification. The prefetch loop runs per request in
-  # every cache state, so this holds for warm cells too.
-  local floor=$(( ITERATIONS ))
-  if (( manifests < floor )); then
-    echo "FATAL: only $manifests manifest fetches for $ITERATIONS requests (floor $floor)."
+  # verification short-circuited for most requests. The prefetch runs per
+  # request in every cache state, so this holds for warm cells too.
+  if (( manifests < iters )); then
+    echo "FATAL: only $manifests manifest fetches for $iters requests."
     echo "       Verification short-circuited — check matchImageReferences and the registry address."
     exit 1
   fi
   # Soft expectation: one fetch per image per request. A large shortfall means
   # fewer images were really fetched than the cell claims to be testing, which
-  # would flatten the images-per-pod curve for a reason that is not the engine.
-  local expected=$(( ITERATIONS * images ))
+  # would flatten the N axis for a reason that is not the engine.
+  local expected=$(( iters * images ))
   local pct=$(( manifests * 100 / (expected > 0 ? expected : 1) ))
   echo "manifest fetches: $manifests of ~$expected expected (${pct}%)"
   if (( pct < 60 )); then
     echo "WARN: manifest fetches well below one-per-image-per-request; the N axis may be compressed"
   fi
   echo "$pct" > "$dir/manifest-coverage-pct.txt"
+  echo "$failed" > "$dir/admission-failed-rate.txt"
 }
 
 # ---------------------------------------------------------------- install
@@ -273,18 +320,24 @@ run_cell() {
       kubectl top pod -n kyverno --no-headers 2>/dev/null | awk -v ts="$ts" '{print ts","$1","$2","$3}' >> "$topcsv"
       sleep 2; done ) & local SPID=$!
 
+  local load_flags
+  if [[ "$LOAD" =~ ^[0-9]+s$ ]]; then
+    load_flags=(--vus "$VUS" --duration "$LOAD")
+  else
+    load_flags=(--vus "$VUS" --iterations "$LOAD")
+  fi
   local t0 t1
   t0=$(date +%s)
   IMAGES_PER_POD="$images" REGISTRY_HOST="$REGISTRY_HOST" REPO="$REPO" TEST_NAMESPACE="$TEST_NS" \
   KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}" "$K6" run "$SCRIPT_JS" \
-    --vus "$VUS" --iterations "$ITERATIONS" \
+    "${load_flags[@]}" \
     --summary-trend-stats "$TREND_STATS" \
     --summary-export "$dir/k6-summary.json" 2>&1 | tee "$dir/k6-output.log"
   t1=$(date +%s)
   kill "$SPID" 2>/dev/null || true
   local window=$(( t1 - t0 )); (( window < 30 )) && window=30
 
-  assert_registry_traffic "$dir" "$images"
+  assert_cell_valid "$dir" "$images"
 
   ( cd "$dir" && KYVERNO_PODS_RANGE="$window" KYVERNO_PODS_STEP=5 \
       bash "$RES_REPORT" "$PROM_LOCAL" ) >/dev/null 2>&1 || echo "WARN: resource report failed"
@@ -300,7 +353,7 @@ run_cell() {
     echo "cache_mode=$CACHE_MODE"
     echo "kyverno_version=$KYVERNO_VERSION"
     echo "kyverno_chart=$KYVERNO_CHART"
-    echo "vus=$VUS"; echo "iterations=$ITERATIONS"
+    echo "vus=$VUS"; echo "load=$LOAD"
     echo "window_sec=$window"
     echo "kyverno_admission_review_duration_avg_sec=${adm_avg:-}"
     echo "kyverno_admission_review_duration_p99_sec=${adm_p99:-}"

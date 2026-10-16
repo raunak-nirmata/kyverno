@@ -70,22 +70,43 @@ CLUSTER=ivpol-bench bash ../clusterpolicy-scaling/setup-mac.sh
 # 2. registry: in-cluster, behind the latency proxy, 16 signed images
 bash registry/setup-registry.sh
 
-# 3. one version's matrix
+# 3. the sweeps
+bash ladder-ivpol-run.sh      # images x latency, 1.19.0 vs 1.19.1   (~4.1 h)
+bash ivpol-cache-run.sh       # cache off / warm / post-policy-edit  (~1.3 h)
+bash ivpol-ramp-run.sh        # concurrency to saturation            (~0.8 h)
+
+# or one version's matrix on its own
 KYVERNO_VERSION=1.19.1 KYVERNO_CHART=3.9.1 bash ivpol-run.sh
 
-# or the full shuffled ladder across versions
-bash ladder-ivpol-run.sh
 python3 ivpol-report.py results/ladder --baseline 1.19.0
 ```
+
+Add the release-over-release chart by widening the ladder's versions:
+
+```sh
+VERSIONS="1.18.2:3.8.2 1.19.0:3.9.0 1.19.1:3.9.1" IMAGES=8 bash ladder-ivpol-run.sh
+```
+
+### Cells are timed, not counted
+
+Every cell runs for `LOAD` (default `60s`) at fixed VUs, rather than for a fixed
+number of iterations. A fixed count makes cell length depend on how expensive
+the cell is: 400 iterations at +100 ms with 16 images runs about 32 s, but the
+same 400 at 0 ms with one image finishes in under a second - far too short to
+read CPU out of Prometheus, and that cheap lane is the control the whole chart
+leans on. A duration gives every cell the same window, and makes throughput
+(iterations completed) a second comparable metric. `LOAD=400` still works and
+means a fixed count.
 
 Smoke it first — one round, two cells, a few minutes:
 
 ```sh
-ROUNDS=1 IMAGES="1 8" DELAYS="25" VUS=5 ITERATIONS=20 bash ladder-ivpol-run.sh
+ROUNDS=1 IMAGES="1 8" DELAYS="100" VUS=5 LOAD=20s bash ladder-ivpol-run.sh
 ```
 
 **Kill criterion.** If the `img8-d100` cell shows no gap between 1.19.0 and
-1.19.1 in that first smoke run, the premise is wrong and the rest of the matrix
+1.19.1 in that first smoke run — which is why the smoke uses the +100 ms lane,
+where the effect should be largest — the premise is wrong and the rest of the matrix
 is not worth running. Check that before committing hours to it.
 
 ## Why the registry is in the cluster
@@ -134,6 +155,7 @@ and cell is gated, and a failure aborts rather than producing a number:
 | **Manifest floor** — at least one manifest fetch per request | Verification short-circuiting. The prefetch runs per request in every cache state, so this holds for warm cells too. |
 | **Manifest coverage** — warns below ~one fetch per image per request | Fewer images really being fetched than the cell claims, which would flatten the N axis for a reason that is not the engine. |
 | **Warm-cache proof** — signature blob fetches must fall after warming | A "warm" cell that is actually cold, which would misattribute the cache's effect. |
+| **Failure rate** — above 1% aborts the cell | A rejected or timed-out request still completes an iteration, and the failure path is *faster* than verification — so a broken or saturated cell reports better latency than a healthy one. `ALLOW_FAILURES=1` lifts this for the concurrency ramp, where saturation is the point. |
 | **Restart check** — recorded per cell, flagged by the report | A pod restart mid-cell empties the webhook Service; with `failurePolicy: Fail` those requests fail and the latency is meaningless. |
 | **Even rounds** — the report refuses to compare unequal round counts | A version measured in two rounds against one measured in three is not a comparison. |
 

@@ -41,7 +41,9 @@ IMAGES="${IMAGES:-1 2 4 8 16}"
 DELAYS="${DELAYS:-0 25 100}"
 CACHE_MODE="${CACHE_MODE:-off}"
 VUS="${VUS:-20}"
-ITERATIONS="${ITERATIONS:-400}"
+# Duration per cell, so every cell in the matrix measures over the same
+# window regardless of how expensive it is. See ivpol-run.sh.
+LOAD="${LOAD:-60s}"
 CELL_COOLDOWN="${CELL_COOLDOWN:-60}"
 IMAGE_COUNT="${IMAGE_COUNT:-16}"
 RESULTS_ROOT="${RESULTS_ROOT:-$HERE/results/ladder}"
@@ -94,7 +96,7 @@ run_slot() {
 
   KYVERNO_VERSION="$app" KYVERNO_CHART="$chart" \
   IMAGES="$IMAGES" DELAYS="$DELAYS" CACHE_MODE="$CACHE_MODE" \
-  VUS="$VUS" ITERATIONS="$ITERATIONS" CELL_COOLDOWN="$CELL_COOLDOWN" \
+  VUS="$VUS" LOAD="$LOAD" CELL_COOLDOWN="$CELL_COOLDOWN" \
   RESULTS_DIR="$base" \
     bash "$HERE/ivpol-run.sh" >>"$LOG" 2>&1
 

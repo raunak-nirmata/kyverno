@@ -1,4 +1,5 @@
 import { Kubernetes } from 'k6/x/kubernetes';
+import { Rate } from 'k6/metrics';
 
 // k6 workload for the ivpol arm: a Pod carrying IMAGES_PER_POD containers, each
 // referencing a *distinct* signed image from the benchmark registry.
@@ -80,7 +81,19 @@ const podSpec = {
     },
 };
 
+// Admission failures are a first-class metric, not an exception to let escape.
+// A rejected or timed-out request still completes an iteration, and its duration
+// is whatever the failure path cost - which is usually fast. Without this, a
+// saturated cell reports a *better* latency than a healthy one, and the
+// concurrency ramp has no stop condition.
+const admissionFailed = new Rate('admission_failed');
+
 export default function () {
     const kubernetes = new Kubernetes();
-    kubernetes.create(podSpec);
+    try {
+        kubernetes.create(podSpec);
+        admissionFailed.add(false);
+    } catch (e) {
+        admissionFailed.add(true);
+    }
 }
