@@ -1,0 +1,57 @@
+# Keyless cosign ImageValidatingPolicy — the "what does Sigstore cost" cell.
+#
+# This is NOT the default. Every other cell uses the key-based policy so that
+# registry latency is the only injected network cost and the benchmark does not
+# depend on a public service. This one deliberately puts Fulcio and Rekor back
+# on the admission path, because that is what a lot of production setups
+# actually run, and the difference between the two is a number worth having.
+#
+# Two consequences to state on any slide built from this policy:
+#
+#   - The numbers include round trips to services nobody in the room controls.
+#     A bad day at rekor.sigstore.dev shows up here as a Kyverno regression if
+#     you are not careful. Run this cell close in time to its key-based
+#     counterpart and report them together.
+#   - It cannot use the benchmark registry's locally signed images, which carry
+#     no transparency-log entry. It points at a public image that does.
+#
+# Not part of the committed scope for the talk; run it if the keyless-vs-key
+# comparison earns a slide.
+apiVersion: policies.kyverno.io/v1beta1
+kind: ImageValidatingPolicy
+metadata:
+  name: ivpol-bench-cosign-keyless
+spec:
+  webhookConfiguration:
+    timeoutSeconds: 30
+  failurePolicy: Fail
+  validationActions:
+    - Deny
+  evaluation:
+    mode: Kubernetes
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  matchImageReferences:
+    - glob: "ghcr.io/kyverno/test-images/cosign:*"
+  validationConfigurations:
+    mutateDigest: false
+    verifyDigest: false
+    required: false
+  attestors:
+    - name: cosign
+      cosign:
+        keyless:
+          identities:
+            - issuer: https://token.actions.githubusercontent.com
+              subject: https://github.com/kyverno/test-images/.github/workflows/cosign.yml@refs/heads/main
+        ctlog:
+          url: https://rekor.sigstore.dev
+          insecureIgnoreSCT: true
+  validations:
+    - expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.cosign])).all(count, count > 0)
+      message: "every container image must carry a valid keyless cosign signature"

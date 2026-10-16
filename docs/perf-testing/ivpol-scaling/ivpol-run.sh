@@ -1,0 +1,324 @@
+#!/usr/bin/env bash
+# Matrix driver for the ivpol scaling benchmark (one Kyverno version).
+#
+# Cells are images-per-pod x injected-registry-latency, at a fixed cache mode.
+# Per cell: k6 iteration_duration stats, Prometheus CPU/memory over the exact
+# cell window, Kyverno's own admission-latency metric, and the registry request
+# counters that prove verification actually happened.
+#
+# Prereqs: bash ../clusterpolicy-scaling/setup-mac.sh (cluster, KWOK, Prometheus)
+#          bash registry/setup-registry.sh            (registry, images, keys)
+#
+# Usage:
+#   bash ivpol-run.sh
+#   IMAGES="1 4" DELAYS="25" bash ivpol-run.sh                  # smoke
+#   CACHE_MODE=warm bash ivpol-run.sh
+#   KYVERNO_VERSION=1.19.0 KYVERNO_CHART=3.9.0 bash ivpol-run.sh
+#
+# ladder-ivpol-run.sh drives this once per (round, version) slot.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SIBLING="$HERE/../clusterpolicy-scaling"
+KYVERNO_REPO="$(cd "$HERE/../../.." && pwd)"
+K6="${K6:-$SIBLING/k6-xk6}"
+SCRIPT_JS="${SCRIPT_JS:-$HERE/script-ivpol-admit.js}"
+RES_REPORT="${RES_REPORT:-$KYVERNO_REPO/scripts/kyverno-pods-resources-report.sh}"
+POLICY_TEMPLATE="${POLICY_TEMPLATE:-$HERE/policies/ivpol-cosign-key.yaml}"
+VALUES="${VALUES:-$HERE/ivpol-scaling-values.yaml}"
+KEY_DIR="${KEY_DIR:-$HERE/registry/keys}"
+
+KYVERNO_VERSION="${KYVERNO_VERSION:-1.19.1}"
+KYVERNO_CHART="${KYVERNO_CHART:-3.9.1}"
+# The headline sweep. Powers of two so the shape of the curve is legible on a
+# slide; 16 is where a serial fetch loop should be unmistakable.
+IMAGES="${IMAGES:-1 2 4 8 16}"
+# 0 is in the list on purpose. It is the control that says how much of the
+# difference between versions is the fetch pattern rather than anything else:
+# with no latency to serialise, the versions should converge.
+DELAYS="${DELAYS:-0 25 100}"
+CACHE_MODE="${CACHE_MODE:-off}"          # off | warm | postedit
+VUS="${VUS:-20}"
+ITERATIONS="${ITERATIONS:-400}"
+CELL_COOLDOWN="${CELL_COOLDOWN:-60}"
+SKIP_INSTALL="${SKIP_INSTALL:-}"
+RESULTS_DIR="${RESULTS_DIR:-$HERE/results/ivpol}"
+REGISTRY_HOST="${REGISTRY_HOST:-registry.bench-registry.svc.cluster.local:5000}"
+REPO="${REPO:-bench/signed}"
+TREND_STATS="avg,min,med,max,p(90),p(95),p(99)"
+PROM_LOCAL="http://localhost:9090"
+TEST_NS="${TEST_NS:-testns}"
+
+export KYVERNO_NAMESPACE=kyverno
+mkdir -p "$RESULTS_DIR"
+
+[[ -x "$K6" ]] || { echo "FATAL: missing k6 build: $K6"; exit 1; }
+[[ -f "$KEY_DIR/cosign.pub" ]] || { echo "FATAL: no public key at $KEY_DIR/cosign.pub — run registry/setup-registry.sh"; exit 1; }
+
+helm repo add kyverno https://kyverno.github.io/kyverno/ >/dev/null 2>&1 || true
+helm repo update kyverno >/dev/null 2>&1 || true
+
+promq() {
+  curl -sf --get "$PROM_LOCAL/api/v1/query" --data-urlencode "query=$1" 2>/dev/null \
+    | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin)["data"]["result"]
+    print(d[0]["value"][1] if d else "")
+except Exception:
+    print("")' 2>/dev/null
+}
+
+registry_ctl() { ACTION="$1" DELAY_MS="${2:-0}" bash "$HERE/registry/setup-registry.sh"; }
+
+# ---------------------------------------------------------------- policy
+
+render_policy() {
+  # The public key is indented into the YAML block scalar. Done with python
+  # rather than sed because the key is multi-line and must keep its exact bytes:
+  # a mangled key fails verification, and a cell that fails verification is
+  # measuring the error path at full speed.
+  local out="$1"
+  python3 - "$POLICY_TEMPLATE" "$KEY_DIR/cosign.pub" "$out" <<'PY'
+import sys, pathlib
+template, keyfile, out = sys.argv[1:4]
+key = pathlib.Path(keyfile).read_text().rstrip("\n")
+indented = "\n".join("            " + line for line in key.splitlines())
+text = pathlib.Path(template).read_text()
+# Exactly one occurrence, not at least one. A second one - in a comment
+# describing the placeholder, for instance - would also be substituted, splicing
+# a multi-line key into a comment and producing a manifest that does not parse.
+occurrences = text.count("PUBLIC_KEY_PLACEHOLDER")
+if occurrences != 1:
+    sys.exit(f"policy template has {occurrences} PUBLIC_KEY_PLACEHOLDER tokens, expected exactly 1")
+rendered = text.replace("PUBLIC_KEY_PLACEHOLDER", indented)
+pathlib.Path(out).write_text(rendered)
+# Parse what will actually be applied. A policy that does not round-trip is a
+# cell that fails for a reason unrelated to the thing being measured.
+try:
+    import yaml
+except ImportError:
+    pass
+else:
+    doc = yaml.safe_load(rendered)
+    got = doc["spec"]["attestors"][0]["cosign"]["key"]["data"].strip()
+    if not (got.startswith("-----BEGIN PUBLIC KEY-----") and got.endswith("-----END PUBLIC KEY-----")):
+        sys.exit("rendered policy does not carry an intact public key")
+PY
+}
+
+apply_policy() {
+  local rendered="$RESULTS_DIR/ivpol-rendered.yaml"
+  render_policy "$rendered"
+  kubectl apply -f "$rendered" >/dev/null
+  kubectl wait --for=condition=Ready ivpol/ivpol-bench-cosign-key --timeout=120s >/dev/null 2>&1 \
+    || echo "WARN: ivpol did not report Ready; controls below decide whether it is actually enforcing"
+  echo "applied $(kubectl get ivpol --no-headers 2>/dev/null | wc -l | tr -d ' ') ImageValidatingPolicy"
+}
+
+# ---------------------------------------------------------------- gates
+
+pod_json() {
+  # $1 = image ref, $2 = pod name
+  printf '{"apiVersion":"v1","kind":"Pod","metadata":{"name":"%s","namespace":"%s"},"spec":{"containers":[{"name":"c","image":"%s","command":["sh","-c","sleep 1"]}]}}' \
+    "$2" "$TEST_NS" "$1"
+}
+
+verify_ivpol_active() {
+  # Negative control: an image the policy matches but which carries no valid
+  # signature MUST be rejected. If it is admitted, ivpol is not on the admission
+  # path and every latency number in this slot would be measuring an empty
+  # pipeline. This is the gate that catches a mis-scoped matchImageReferences,
+  # a policy that failed to compile, or a webhook that never registered.
+  local unsigned="$REGISTRY_HOST/$REPO:unsigned-control"
+  if pod_json "$unsigned" "ivpol-neg-control" | kubectl create --dry-run=server -f - >/tmp/ivpol-neg.out 2>&1; then
+    echo "FATAL: negative control was ADMITTED — an unsigned image passed ivpol."
+    sed 's/^/  negctl: /' /tmp/ivpol-neg.out
+    exit 1
+  fi
+  echo "negative control OK: unsigned image rejected"
+
+  # Positive control: a correctly signed image MUST be admitted. Without this,
+  # a policy that rejects everything - wrong key, unreachable registry - would
+  # pass the negative control and look like a working, very fast cell.
+  local signed="$REGISTRY_HOST/$REPO:v1"
+  if ! pod_json "$signed" "ivpol-pos-control" | kubectl create --dry-run=server -f - >/tmp/ivpol-pos.out 2>&1; then
+    echo "FATAL: positive control was REJECTED — a correctly signed image failed ivpol."
+    echo "       Every cell would be measuring the rejection path, not verification."
+    sed 's/^/  posctl: /' /tmp/ivpol-pos.out
+    exit 1
+  fi
+  echo "positive control OK: signed image admitted"
+}
+
+assert_registry_traffic() {
+  # $1 = cell dir, $2 = expected images per pod
+  local dir="$1" images="$2"
+  local stats manifests total
+  stats="$(registry_ctl stats 2>/dev/null | tail -1)"
+  echo "$stats" > "$dir/registry-stats.json"
+  manifests=$(printf '%s' "$stats" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("manifest",0))
+except Exception: print(0)' 2>/dev/null)
+  total=$(printf '%s' "$stats" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("total",0))
+except Exception: print(0)' 2>/dev/null)
+  echo "registry requests: total=$total manifests=$manifests"
+
+  # Hard floor: at least one manifest fetch per admission request. Below this,
+  # verification did not happen for most requests and the cell is not a
+  # measurement of image verification. The prefetch loop runs per request in
+  # every cache state, so this holds for warm cells too.
+  local floor=$(( ITERATIONS ))
+  if (( manifests < floor )); then
+    echo "FATAL: only $manifests manifest fetches for $ITERATIONS requests (floor $floor)."
+    echo "       Verification short-circuited — check matchImageReferences and the registry address."
+    exit 1
+  fi
+  # Soft expectation: one fetch per image per request. A large shortfall means
+  # fewer images were really fetched than the cell claims to be testing, which
+  # would flatten the images-per-pod curve for a reason that is not the engine.
+  local expected=$(( ITERATIONS * images ))
+  local pct=$(( manifests * 100 / (expected > 0 ? expected : 1) ))
+  echo "manifest fetches: $manifests of ~$expected expected (${pct}%)"
+  if (( pct < 60 )); then
+    echo "WARN: manifest fetches well below one-per-image-per-request; the N axis may be compressed"
+  fi
+  echo "$pct" > "$dir/manifest-coverage-pct.txt"
+}
+
+# ---------------------------------------------------------------- install
+
+setup_kyverno() {
+  [[ -n "$SKIP_INSTALL" ]] && { echo "SKIP_INSTALL set — reusing existing install"; return; }
+  echo "==> installing Kyverno $KYVERNO_VERSION (chart $KYVERNO_CHART), cache mode $CACHE_MODE"
+  helm uninstall kyverno -n kyverno >/dev/null 2>&1 || true
+  kubectl delete ns kyverno --ignore-not-found --wait=true >/dev/null 2>&1 || true
+
+  # Cache mode is an install-time property because it is a controller flag.
+  # "off" is the headline sweep's state: it removes the cache as a variable so
+  # the images-per-pod curve is about the fetch pattern alone.
+  local cache_enabled=true
+  [[ "$CACHE_MODE" == "off" ]] && cache_enabled=false
+
+  helm install kyverno kyverno/kyverno \
+    --version "$KYVERNO_CHART" \
+    -n kyverno --create-namespace \
+    -f "$VALUES" \
+    --set "admissionController.container.extraArgs.imageVerifyCacheEnabled=$cache_enabled" \
+    --wait --timeout 10m >/dev/null
+  kubectl -n kyverno rollout status deploy/kyverno-admission-controller --timeout=300s
+  kubectl create ns "$TEST_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  apply_policy
+  verify_ivpol_active
+}
+
+warm_cache() {
+  # Only meaningful when the cache is on. Drives a short burst so the images
+  # this cell uses are already verified, then proves the cache is actually
+  # being hit by checking that a second burst costs fewer registry blob fetches
+  # than the first. Manifest fetches do not drop - the prefetch is before the
+  # cache - so blobs are the signal.
+  [[ "$CACHE_MODE" == "off" ]] && return
+  local images="$1"
+  echo "warming cache for $images image(s)"
+  registry_ctl reset >/dev/null
+  IMAGES_PER_POD="$images" REGISTRY_HOST="$REGISTRY_HOST" REPO="$REPO" TEST_NAMESPACE="$TEST_NS" \
+    "$K6" run "$SCRIPT_JS" --vus 5 --iterations 25 --quiet >/dev/null 2>&1 || true
+  local first second
+  first=$(registry_ctl stats 2>/dev/null | tail -1 | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("blob",0))
+except Exception: print(0)')
+  registry_ctl reset >/dev/null
+  IMAGES_PER_POD="$images" REGISTRY_HOST="$REGISTRY_HOST" REPO="$REPO" TEST_NAMESPACE="$TEST_NS" \
+    "$K6" run "$SCRIPT_JS" --vus 5 --iterations 25 --quiet >/dev/null 2>&1 || true
+  second=$(registry_ctl stats 2>/dev/null | tail -1 | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("blob",0))
+except Exception: print(0)')
+  echo "warm proof: signature blob fetches ${first} -> ${second}"
+  if (( second >= first )) && (( first > 0 )); then
+    echo "FATAL: blob fetches did not fall after warming — the cache is not being hit."
+    echo "       A 'warm' cell that is actually cold would misattribute the cache's effect."
+    exit 1
+  fi
+  kubectl delete pods -n "$TEST_NS" --all --ignore-not-found --wait=false >/dev/null 2>&1 || true
+}
+
+touch_policy() {
+  # postedit: bump an annotation so the policy's resourceVersion changes. The
+  # verification cache keys on it (pkg/image/verification/cache/client.go
+  # generateKey), so this invalidates every entry for the policy without
+  # changing what the policy does. That is the production gotcha the cache
+  # chart exists to show: a routine edit silently returns you to the cold path.
+  kubectl annotate ivpol ivpol-bench-cosign-key \
+    "bench.kyverno.io/touched-at=$(date -u +%s)" --overwrite >/dev/null
+  echo "policy annotated — resourceVersion bumped, cache entries invalidated"
+}
+
+# ---------------------------------------------------------------- cells
+
+run_cell() {
+  local images="$1" delay="$2"
+  local cell="img${images}-d${delay}-${CACHE_MODE}"
+  local dir="$RESULTS_DIR/$cell"; mkdir -p "$dir"
+  echo
+  echo "==================== cell $cell ===================="
+
+  registry_ctl delay "$delay" >/dev/null
+  warm_cache "$images"
+  [[ "$CACHE_MODE" == "postedit" ]] && touch_policy
+  registry_ctl reset >/dev/null
+
+  local topcsv="$dir/kubectl-top.csv"; echo "timestamp,pod,cpu,memory" > "$topcsv"
+  ( while true; do ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      kubectl top pod -n kyverno --no-headers 2>/dev/null | awk -v ts="$ts" '{print ts","$1","$2","$3}' >> "$topcsv"
+      sleep 2; done ) & local SPID=$!
+
+  local t0 t1
+  t0=$(date +%s)
+  IMAGES_PER_POD="$images" REGISTRY_HOST="$REGISTRY_HOST" REPO="$REPO" TEST_NAMESPACE="$TEST_NS" \
+  KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}" "$K6" run "$SCRIPT_JS" \
+    --vus "$VUS" --iterations "$ITERATIONS" \
+    --summary-trend-stats "$TREND_STATS" \
+    --summary-export "$dir/k6-summary.json" 2>&1 | tee "$dir/k6-output.log"
+  t1=$(date +%s)
+  kill "$SPID" 2>/dev/null || true
+  local window=$(( t1 - t0 )); (( window < 30 )) && window=30
+
+  assert_registry_traffic "$dir" "$images"
+
+  ( cd "$dir" && KYVERNO_PODS_RANGE="$window" KYVERNO_PODS_STEP=5 \
+      bash "$RES_REPORT" "$PROM_LOCAL" ) >/dev/null 2>&1 || echo "WARN: resource report failed"
+
+  local adm_avg adm_p99
+  adm_avg=$(promq 'sum(rate(kyverno_admission_review_duration_seconds_sum[5m]))/sum(rate(kyverno_admission_review_duration_seconds_count[5m]))')
+  adm_p99=$(promq 'histogram_quantile(0.99, sum(rate(kyverno_admission_review_duration_seconds_bucket[5m])) by (le))')
+
+  {
+    echo "cell=$cell"
+    echo "images_per_pod=$images"
+    echo "registry_delay_ms=$delay"
+    echo "cache_mode=$CACHE_MODE"
+    echo "kyverno_version=$KYVERNO_VERSION"
+    echo "kyverno_chart=$KYVERNO_CHART"
+    echo "vus=$VUS"; echo "iterations=$ITERATIONS"
+    echo "window_sec=$window"
+    echo "kyverno_admission_review_duration_avg_sec=${adm_avg:-}"
+    echo "kyverno_admission_review_duration_p99_sec=${adm_p99:-}"
+    echo "pod_restarts=$(kubectl -n kyverno get pods -l app.kubernetes.io/component=admission-controller -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{" "}{end}' 2>/dev/null)"
+    echo "ivpol_present=$(kubectl get ivpol --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+    shasum -a 256 "$POLICY_TEMPLATE"
+  } > "$dir/meta.txt"
+  echo "archived -> $dir"
+
+  kubectl delete pods -n "$TEST_NS" --all --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  echo "cooldown ${CELL_COOLDOWN}s ..."; sleep "$CELL_COOLDOWN"
+}
+
+setup_kyverno
+for delay in $DELAYS; do
+  for images in $IMAGES; do
+    run_cell "$images" "$delay"
+  done
+done
+echo
+echo "=== ivpol run complete. Cells under $RESULTS_DIR/ ==="
