@@ -255,9 +255,18 @@ except Exception: print(0)' 2>/dev/null)
   # verification short-circuited for most requests. The prefetch runs per
   # request in every cache state, so this holds for warm cells too.
   if (( manifests < iters )); then
-    echo "FATAL: only $manifests manifest fetches for $iters requests."
-    echo "       Verification short-circuited — check matchImageReferences and the registry address."
-    exit 1
+    # ALLOW_FAILURES means failure is what this cell is measuring - the crash
+    # boundary sweep, where the engine is expected to die. A dead engine fetches
+    # nothing, so a starved manifest count is the symptom, not a misconfigured
+    # policy, and aborting here would throw away the very result being sought.
+    if [[ "${ALLOW_FAILURES:-}" == "1" ]]; then
+      echo "WARN: only $manifests manifest fetches for $iters requests."
+      echo "      Expected while the engine is failing; ALLOW_FAILURES is set, continuing."
+    else
+      echo "FATAL: only $manifests manifest fetches for $iters requests."
+      echo "       Verification short-circuited — check matchImageReferences and the registry address."
+      exit 1
+    fi
   fi
   # Soft expectation: one fetch per image per request. A large shortfall means
   # fewer images were really fetched than the cell claims to be testing, which
