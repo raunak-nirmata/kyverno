@@ -78,15 +78,37 @@ mkdir -p "$RESULTS_DIR"
 helm repo add kyverno https://kyverno.github.io/kyverno/ >/dev/null 2>&1 || true
 helm repo update kyverno >/dev/null 2>&1 || true
 
+# Prometheus is a cross-check, not the measurement: a missing value is worth a
+# blank column, never a dead run. Without the `|| true` a failed curl fails the
+# pipeline (set -o pipefail), which fails the assignment, which set -e turns
+# into a silent exit just before the cell writes its metadata.
 promq() {
-  curl -sf --get "$PROM_LOCAL/api/v1/query" --data-urlencode "query=$1" 2>/dev/null \
+  { curl -sf --get "$PROM_LOCAL/api/v1/query" --data-urlencode "query=$1" 2>/dev/null \
     | python3 -c 'import json,sys
 try:
     d=json.load(sys.stdin)["data"]["result"]
     print(d[0]["value"][1] if d else "")
 except Exception:
-    print("")' 2>/dev/null
+    print("")' 2>/dev/null; } || true
 }
+
+# The sibling harness port-forwards Prometheus for the whole run; this one needs
+# the same, and previously just assumed localhost:9090 was already listening.
+PROM_PF_PID=""
+start_prom_pf() {
+  pkill -f "port-forward svc/kube-prometheus-stack-prometheus" 2>/dev/null || true
+  sleep 1
+  kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090 \
+    >/tmp/ivpol-prom-pf.log 2>&1 &
+  PROM_PF_PID=$!
+  disown "$PROM_PF_PID" 2>/dev/null || true
+  for _ in $(seq 1 60); do
+    curl -sf "$PROM_LOCAL/-/ready" >/dev/null 2>&1 && { echo "Prometheus reachable"; return 0; }
+    sleep 1
+  done
+  echo "WARN: Prometheus not reachable on $PROM_LOCAL; resource columns will be blank"
+}
+trap 'kill $PROM_PF_PID 2>/dev/null || true' EXIT
 
 registry_ctl() { ACTION="$1" DELAY_MS="${2:-0}" bash "$HERE/registry/setup-registry.sh"; }
 
@@ -187,8 +209,12 @@ try:
 except Exception:
     print("0 0"); raise SystemExit
 iters = int(m.get("iterations", {}).get("count", 0))
-rate = m.get("admission_failed", {}).get("rate")
-# Older summaries without the metric report nothing rather than a false zero.
+# k6 reports a Rate metric as {"passes": n, "fails": n, "value": r}, where
+# value is the proportion of true samples - here, the share of admissions that
+# failed. There is no "rate" key; reading one made this gate silently inert.
+failed_metric = m.get("admission_failed", {})
+rate = failed_metric.get("value", failed_metric.get("rate"))
+# A summary with no such metric reports nothing rather than a false zero.
 print(f"{iters} {-1 if rate is None else rate}")
 PY2
 )"
@@ -267,7 +293,10 @@ assert_running_image() {
 }
 
 setup_kyverno() {
-  [[ -n "$SKIP_INSTALL" ]] && { echo "SKIP_INSTALL set — reusing existing install"; return; }
+  # Before the SKIP_INSTALL return: the ramp reuses one install across steps, and
+  # each step still needs Prometheus reachable to fill its resource columns.
+  start_prom_pf
+  [[ -n "$SKIP_INSTALL" ]] && { echo "SKIP_INSTALL set — reusing existing install"; return 0; }
   echo "==> installing Kyverno $KYVERNO_VERSION (chart $KYVERNO_CHART), cache mode $CACHE_MODE"
   helm uninstall kyverno -n kyverno >/dev/null 2>&1 || true
   kubectl delete ns kyverno --ignore-not-found --wait=true >/dev/null 2>&1 || true
