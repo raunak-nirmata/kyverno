@@ -58,6 +58,15 @@ spec:
         key:
           data: |
 PUBLIC_KEY_PLACEHOLDER
+        # The benchmark images are signed offline against a local key: there is
+        # no Rekor entry for them, because putting a public transparency log on
+        # the admission path would add latency nobody here controls to every
+        # measured request. Without this, Kyverno finds the signature and then
+        # fails it with "offline verification failed" while trying to confirm a
+        # log entry that was never made.
+        ctlog:
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
   validations:
     # Every matched image must carry a valid signature from the benchmark key.
     # Written as an explicit count comparison rather than a boolean so a partial

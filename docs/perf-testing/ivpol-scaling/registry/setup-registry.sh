@@ -37,7 +37,21 @@ IN_CLUSTER_HOST="${IN_CLUSTER_HOST:-registry.${NS}.svc.cluster.local:5000}"
 # pushed through the forward is the one Kyverno finds in cluster.
 PUSH_PORT="${PUSH_PORT:-5999}"
 KEY_DIR="${KEY_DIR:-$HERE/keys}"
+# distribution 3.x. Tried first as a fix for the signature-format problem
+# described under COSIGN_BIN, on the theory that its Referrers API would let
+# Kyverno find cosign v3's bundles - it did not, the referrers endpoint 404s
+# here either way, and signing with cosign v2 is what actually fixed it. Kept at
+# 3 only because it is the current release; 2 works identically for this
+# benchmark.
+REGISTRY_IMAGE="${REGISTRY_IMAGE:-registry:3}"
 export COSIGN_PASSWORD="${COSIGN_PASSWORD:-}"
+# cosign v2, not v3. v3 writes signatures only in the OCI 1.1 bundle form, and
+# Kyverno decides which form to read by calling cosign.GetBundles, which needs
+# the registry's Referrers API - distribution does not serve it here, so
+# GetBundles finds nothing and Kyverno falls back to the legacy <digest>.sig tag
+# that v3 never wrote. v2 writes that tag, which the fallback path reads.
+# Install: go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.3
+COSIGN_BIN="${COSIGN_BIN:-$HOME/go/bin/cosign}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing required command: $1"; exit 1; }; }
 
@@ -74,7 +88,18 @@ esac
 
 need kubectl
 need crane
-need cosign
+[[ -x "$COSIGN_BIN" ]] || { echo "missing cosign at $COSIGN_BIN"; echo "  install: go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.3"; exit 1; }
+# Fail now, with an explanation, rather than after signing 16 images that
+# Kyverno will not be able to read.
+cosign_major=$("$COSIGN_BIN" version 2>/dev/null | awk '/GitVersion/{gsub(/v/,"",$2); split($2,a,"."); print a[1]}')
+if [[ "${cosign_major:-0}" -ge 3 ]]; then
+  echo "FATAL: $COSIGN_BIN is cosign v${cosign_major}, which writes signatures only in the"
+  echo "       OCI 1.1 bundle form. Kyverno reads those only when the registry serves the"
+  echo "       Referrers API, which this one does not, so every verification would fail"
+  echo "       with 'no signatures found'. Install v2 and point COSIGN_BIN at it:"
+  echo "         go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.3"
+  exit 1
+fi
 
 echo "==> namespace $NS"
 kubectl create ns "$NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
@@ -106,7 +131,7 @@ spec:
           effect: NoSchedule
       containers:
         - name: registry
-          image: registry:2
+          image: $REGISTRY_IMAGE
           ports: [ { containerPort: 5000 } ]
           env:
             - { name: REGISTRY_STORAGE_DELETE_ENABLED, value: "true" }
@@ -174,7 +199,7 @@ kubectl -n "$NS" rollout status deploy/registry-proxy --timeout=180s
 echo "==> cosign key pair"
 mkdir -p "$KEY_DIR"
 if [[ ! -f "$KEY_DIR/cosign.key" ]]; then
-  ( cd "$KEY_DIR" && cosign generate-key-pair >/dev/null )
+  ( cd "$KEY_DIR" && "$COSIGN_BIN" generate-key-pair >/dev/null )
   echo "generated $KEY_DIR/cosign.pub"
 else
   echo "reusing $KEY_DIR/cosign.pub"
@@ -212,7 +237,7 @@ for i in $(seq 1 "$IMAGE_COUNT"); do
   # --use-signing-config=false is required with cosign v3: --tlog-upload=false
   # alone is refused, because a default signing config naming a transparency log
   # is in play. There is no Rekor here by design.
-  cosign sign --yes --use-signing-config=false --tlog-upload=false \
+  "$COSIGN_BIN" sign --yes --tlog-upload=false \
     --allow-insecure-registry \
     --key "$KEY_DIR/cosign.key" \
     "127.0.0.1:$PUSH_PORT/$REPO:$tag" >/dev/null 2>&1 \
@@ -220,8 +245,18 @@ for i in $(seq 1 "$IMAGE_COUNT"); do
   printf '  signed %s:%s\r' "$REPO" "$tag"
 done
 echo
+# An image that exists but carries no signature. Without it the negative control
+# would point at a tag that is simply missing, and the registry's
+# MANIFEST_UNKNOWN would reject the Pod whether or not verification works at
+# all - a gate that passes on a completely broken policy.
+printf 'ivpol-benchmark unsigned control\n' > "$BUILD/marker"
+( cd "$BUILD" && tar cf layer.tar marker )
+crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$REPO:unsigned-control" --insecure >/dev/null 2>&1 \
+  || { echo "FATAL: could not push the unsigned control image"; exit 1; }
+echo "  pushed $REPO:unsigned-control (deliberately unsigned)"
+
 echo "==> verifying one image through the same path Kyverno will use"
-cosign verify --key "$KEY_DIR/cosign.pub" --insecure-ignore-tlog=true \
+"$COSIGN_BIN" verify --key "$KEY_DIR/cosign.pub" --insecure-ignore-tlog=true \
   --allow-insecure-registry \
   "127.0.0.1:$PUSH_PORT/$REPO:v1" >/dev/null 2>&1 \
   || { echo "FATAL: signature does not verify; every cell would measure a failing policy"; exit 1; }

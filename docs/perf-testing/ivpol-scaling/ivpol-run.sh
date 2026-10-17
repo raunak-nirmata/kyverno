@@ -302,10 +302,14 @@ setup_kyverno() {
     echo "  image registry override: $KYVERNO_IMAGE_REGISTRY"
   fi
 
+  # ${arr[@]+"${arr[@]}"} rather than "${arr[@]}": macOS ships bash 3.2, where
+  # expanding an empty array under `set -u` is an unbound-variable error. The
+  # override arrays are empty on the normal published-chart path, which is the
+  # one the main ladder uses.
   helm install kyverno "${chart_args[@]}" \
     -n kyverno --create-namespace \
     -f "$VALUES" \
-    "${image_args[@]}" \
+    ${image_args[@]+"${image_args[@]}"} \
     --set "admissionController.container.extraArgs.imageVerifyCacheEnabled=$cache_enabled" \
     --wait --timeout 10m >/dev/null
   kubectl -n kyverno rollout status deploy/kyverno-admission-controller --timeout=300s
