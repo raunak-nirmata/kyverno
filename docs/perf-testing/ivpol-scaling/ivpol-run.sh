@@ -30,6 +30,19 @@ KEY_DIR="${KEY_DIR:-$HERE/registry/keys}"
 
 KYVERNO_VERSION="${KYVERNO_VERSION:-1.19.1}"
 KYVERNO_CHART="${KYVERNO_CHART:-3.9.1}"
+# For versions with no published chart (release candidates). Set to a chart
+# directory - fetch-chart.sh extracts one from a git tag - and KYVERNO_CHART is
+# ignored. KYVERNO_IMAGE_TAG is then REQUIRED, because a chart taken from an RC
+# tag still carries the previous release's appVersion and would otherwise
+# install the wrong image.
+KYVERNO_CHART_PATH="${KYVERNO_CHART_PATH:-}"
+KYVERNO_IMAGE_TAG="${KYVERNO_IMAGE_TAG:-}"
+# The chart defaults to reg.kyverno.io. That host answers 401 to an anonymous
+# manifest request for every tag, so it cannot be probed ahead of time to
+# confirm a release candidate is actually there. ghcr.io can be, and was: both
+# v1.19.1 and v1.19.2-rc.1 return 200. Point RC installs at ghcr so a missing
+# image fails at `helm install` rather than halfway through a slot.
+KYVERNO_IMAGE_REGISTRY="${KYVERNO_IMAGE_REGISTRY:-}"
 # The headline sweep. Powers of two so the shape of the curve is legible on a
 # slide; 16 is where a serial fetch loop should be unmistakable.
 IMAGES="${IMAGES:-1 2 4 8 16}"
@@ -235,6 +248,24 @@ except Exception: print(0)' 2>/dev/null)
 
 # ---------------------------------------------------------------- install
 
+assert_running_image() {
+  # Prove the pod is running the version this slot claims. The chart's
+  # appVersion is not trustworthy for a release candidate - at v1.19.2-rc.1 it
+  # still says v1.19.1 - so the only honest check is what the container is
+  # actually running.
+  local want="${KYVERNO_IMAGE_TAG:-v$KYVERNO_VERSION}"
+  local running
+  running=$(kubectl -n kyverno get deploy kyverno-admission-controller \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)
+  echo "  running image: $running"
+  if [[ "$running" != *"$want"* ]]; then
+    echo "FATAL: admission controller is running '$running' but this slot claims '$want'."
+    echo "       Every number would be attributed to the wrong version."
+    exit 1
+  fi
+  echo "$running" > "$RESULTS_DIR/running-image.txt"
+}
+
 setup_kyverno() {
   [[ -n "$SKIP_INSTALL" ]] && { echo "SKIP_INSTALL set — reusing existing install"; return; }
   echo "==> installing Kyverno $KYVERNO_VERSION (chart $KYVERNO_CHART), cache mode $CACHE_MODE"
@@ -247,13 +278,38 @@ setup_kyverno() {
   local cache_enabled=true
   [[ "$CACHE_MODE" == "off" ]] && cache_enabled=false
 
-  helm install kyverno kyverno/kyverno \
-    --version "$KYVERNO_CHART" \
+  local chart_args=()
+  if [[ -n "$KYVERNO_CHART_PATH" ]]; then
+    [[ -f "$KYVERNO_CHART_PATH/Chart.yaml" ]] \
+      || { echo "FATAL: no chart at $KYVERNO_CHART_PATH"; exit 1; }
+    [[ -n "$KYVERNO_IMAGE_TAG" ]] \
+      || { echo "FATAL: KYVERNO_CHART_PATH set without KYVERNO_IMAGE_TAG."
+           echo "       A chart taken from an RC tag still declares the previous release's"
+           echo "       appVersion, so this would install the wrong image and the run would"
+           echo "       measure a version it did not claim to."; exit 1; }
+    chart_args=("$KYVERNO_CHART_PATH")
+    echo "  chart: local $KYVERNO_CHART_PATH"
+  else
+    chart_args=(kyverno/kyverno --version "$KYVERNO_CHART")
+  fi
+  local image_args=()
+  if [[ -n "$KYVERNO_IMAGE_TAG" ]]; then
+    image_args+=(--set "admissionController.container.image.tag=$KYVERNO_IMAGE_TAG")
+    echo "  image tag override: $KYVERNO_IMAGE_TAG"
+  fi
+  if [[ -n "$KYVERNO_IMAGE_REGISTRY" ]]; then
+    image_args+=(--set "admissionController.container.image.registry=$KYVERNO_IMAGE_REGISTRY")
+    echo "  image registry override: $KYVERNO_IMAGE_REGISTRY"
+  fi
+
+  helm install kyverno "${chart_args[@]}" \
     -n kyverno --create-namespace \
     -f "$VALUES" \
+    "${image_args[@]}" \
     --set "admissionController.container.extraArgs.imageVerifyCacheEnabled=$cache_enabled" \
     --wait --timeout 10m >/dev/null
   kubectl -n kyverno rollout status deploy/kyverno-admission-controller --timeout=300s
+  assert_running_image
   kubectl create ns "$TEST_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   apply_policy
   verify_ivpol_active
@@ -352,7 +408,8 @@ run_cell() {
     echo "registry_delay_ms=$delay"
     echo "cache_mode=$CACHE_MODE"
     echo "kyverno_version=$KYVERNO_VERSION"
-    echo "kyverno_chart=$KYVERNO_CHART"
+    echo "kyverno_chart=${KYVERNO_CHART_PATH:-$KYVERNO_CHART}"
+    echo "kyverno_image=$(cat "$RESULTS_DIR/running-image.txt" 2>/dev/null)"
     echo "vus=$VUS"; echo "load=$LOAD"
     echo "window_sec=$window"
     echo "kyverno_admission_review_duration_avg_sec=${adm_avg:-}"

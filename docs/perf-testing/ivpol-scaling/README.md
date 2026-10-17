@@ -87,6 +87,40 @@ Add the release-over-release chart by widening the ladder's versions:
 VERSIONS="1.18.2:3.8.2 1.19.0:3.9.0 1.19.1:3.9.1" IMAGES=8 bash ladder-ivpol-run.sh
 ```
 
+### Versions with no published chart
+
+A chart of `local` means the version has no chart on kyverno.github.io - release
+candidates - so `fetch-chart.sh` extracts one from the repo at that git tag:
+
+```sh
+VERSIONS="1.19.1:3.9.1 1.19.2-rc.1:local" IMAGES=8 bash ladder-ivpol-run.sh
+```
+
+Two traps this handles, both of which would otherwise produce a chart
+attributing numbers to the wrong version:
+
+- **The chart at an RC tag carries the previous release's appVersion.** At
+  `v1.19.2-rc.1` it still says `appVersion: v1.19.1`, so installing it as-is
+  pulls the 1.19.1 image. The image tag is therefore overridden explicitly, and
+  `KYVERNO_CHART_PATH` without `KYVERNO_IMAGE_TAG` is refused outright.
+- **The chart's default registry cannot be probed.** `reg.kyverno.io` answers
+  401 to an anonymous manifest request for every tag, so there is no way to
+  confirm an RC image is there before starting a slot. `ghcr.io` can be checked
+  and has both tags, so local-chart installs point there
+  (`LOCAL_CHART_REGISTRY` overrides it).
+
+After install, the running container image is read back and compared against
+the version the slot claims. A mismatch aborts rather than producing numbers
+filed under the wrong release.
+
+**What 1.19.2-rc.1 is worth measuring for.** It carries the ivpol request-map
+hoist (#17585 / #17872) plus three security fixes, one of which (#17996) rewrites
+how layer reads are bounded and so also touches the registry read path. That
+makes a 1.19.1 → 1.19.2-rc.1 delta release-over-release, not a clean attribution
+of the hoist - the same caveat as 1.18.2. Expect little from the hoist here
+regardless: it only pays when one engine call carries several policies, and
+ivpol policies are almost always fine-grained (see below).
+
 ### Cells are timed, not counted
 
 Every cell runs for `LOAD` (default `60s`) at fixed VUs, rather than for a fixed

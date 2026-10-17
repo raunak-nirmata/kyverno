@@ -31,6 +31,9 @@ KYVERNO_REPO="$(cd "$HERE/../../.." && pwd)"
 # 1.19.1 and not in 1.19.0, and nothing else relevant to the image path differs
 # between them. 1.18.2 is a separate, explicitly non-attributable comparison -
 # see README - and is added by overriding VERSIONS.
+# Entries are app:chart. A chart of "local" means there is no published chart
+# for that version - release candidates - and fetch-chart.sh extracts one from
+# the matching git tag, with the image tag overridden explicitly.
 VERSIONS="${VERSIONS:-1.19.0:3.9.0 1.19.1:3.9.1}"
 BASELINE="${BASELINE:-1.19.0}"
 ROUNDS="${ROUNDS:-3}"
@@ -94,7 +97,19 @@ run_slot() {
   # aborts for a reason that has nothing to do with the version.
   IMAGE_COUNT="$IMAGE_COUNT" bash "$HERE/registry/setup-registry.sh" >>"$LOG" 2>&1
 
+  # A version with no published chart is installed from the repo at its tag.
+  local chart_path="" image_tag="" image_registry=""
+  if [[ "$chart" == "local" ]]; then
+    chart_path="$(bash "$HERE/fetch-chart.sh" "v$app")" \
+      || { echo "FATAL: could not fetch chart for v$app" | tee -a "$LOG"; exit 1; }
+    image_tag="v$app"
+    image_registry="${LOCAL_CHART_REGISTRY:-ghcr.io}"
+    echo "    local chart: $chart_path (image $image_registry/kyverno/kyverno:v$app)" | tee -a "$LOG"
+  fi
+
   KYVERNO_VERSION="$app" KYVERNO_CHART="$chart" \
+  KYVERNO_CHART_PATH="$chart_path" KYVERNO_IMAGE_TAG="$image_tag" \
+  KYVERNO_IMAGE_REGISTRY="$image_registry" \
   IMAGES="$IMAGES" DELAYS="$DELAYS" CACHE_MODE="$CACHE_MODE" \
   VUS="$VUS" LOAD="$LOAD" CELL_COOLDOWN="$CELL_COOLDOWN" \
   RESULTS_DIR="$base" \
