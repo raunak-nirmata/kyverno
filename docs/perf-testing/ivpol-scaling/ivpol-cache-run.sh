@@ -69,7 +69,7 @@ rnd=random.Random(s+r); rnd.shuffle(items); print(' '.join(items))" "$r" "$SEED"
 
     echo "  [slot] round $r $app cluster=$cluster" | tee -a "$LOG"
     CLUSTER="$cluster" KIND_IMAGE="$KIND_IMAGE" bash "$SIBLING/setup-mac.sh" >>"$LOG" 2>&1
-    IMAGE_COUNT="$IMAGE_COUNT" bash "$HERE/registry/setup-registry.sh" >>"$LOG" 2>&1
+    IMAGE_COUNT="$IMAGE_COUNT" KIND_CLUSTER="$cluster" bash "$HERE/registry/setup-registry.sh" >>"$LOG" 2>&1
 
     for mode in $MODES; do
       echo "    [mode] $mode" | tee -a "$LOG"

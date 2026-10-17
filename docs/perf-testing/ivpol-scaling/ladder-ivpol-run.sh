@@ -95,7 +95,7 @@ run_slot() {
   # Registry first: the policy's public key and the signed images must exist
   # before Kyverno's controls run, or the positive control fails and the slot
   # aborts for a reason that has nothing to do with the version.
-  IMAGE_COUNT="$IMAGE_COUNT" bash "$HERE/registry/setup-registry.sh" >>"$LOG" 2>&1
+  IMAGE_COUNT="$IMAGE_COUNT" KIND_CLUSTER="$cluster" bash "$HERE/registry/setup-registry.sh" >>"$LOG" 2>&1
 
   # A version with no published chart is installed from the repo at its tag.
   local chart_path="" image_tag="" image_registry=""

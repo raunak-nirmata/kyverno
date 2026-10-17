@@ -44,6 +44,15 @@ KEY_DIR="${KEY_DIR:-$HERE/keys}"
 # 3 only because it is the current release; 2 works identically for this
 # benchmark.
 REGISTRY_IMAGE="${REGISTRY_IMAGE:-registry:3}"
+PROXY_IMAGE="${PROXY_IMAGE:-python:3.12-alpine}"
+# Optional: the kind cluster to side-load the rig's images into. Every slot in a
+# ladder is a fresh cluster, so without this each one pulls the same two images
+# from Docker Hub again - slow, and enough repetitions to meet a rate limit
+# partway through a run.
+KIND_CLUSTER="${KIND_CLUSTER:-}"
+# A fresh cluster pulling both images can take minutes on a cold cache. The old
+# 180s was tuned against a warm one and timed out a slot that was working.
+ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-420s}"
 export COSIGN_PASSWORD="${COSIGN_PASSWORD:-}"
 # cosign v2, not v3. v3 writes signatures only in the OCI 1.1 bundle form, and
 # Kyverno decides which form to read by calling cosign.GetBundles, which needs
@@ -109,6 +118,16 @@ kubectl -n "$NS" create configmap registry-proxy-src \
   --from-file=delay-proxy.py="$HERE/delay-proxy.py" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
+# Pull once on the host and side-load, so repeated slots reuse the local copy.
+if [[ -n "$KIND_CLUSTER" ]] && command -v kind >/dev/null 2>&1 && command -v docker >/dev/null 2>&1; then
+  echo "==> preloading rig images into kind cluster $KIND_CLUSTER"
+  for img in "$REGISTRY_IMAGE" "$PROXY_IMAGE"; do
+    docker image inspect "$img" >/dev/null 2>&1 || docker pull -q "$img" >/dev/null 2>&1 || true
+    kind load docker-image "$img" --name "$KIND_CLUSTER" >/dev/null 2>&1 \
+      && echo "  loaded $img" || echo "  could not preload $img (will pull in cluster)"
+  done
+fi
+
 echo "==> registry + proxy"
 kubectl -n "$NS" apply -f - <<YAML >/dev/null
 apiVersion: apps/v1
@@ -164,7 +183,7 @@ spec:
           effect: NoSchedule
       containers:
         - name: proxy
-          image: python:3.12-alpine
+          image: $PROXY_IMAGE
           command: ["python3", "/src/delay-proxy.py"]
           env:
             - { name: UPSTREAM_HOST, value: registry-backend }
@@ -193,8 +212,8 @@ spec:
     - { name: stats, port: 5001, targetPort: 5001 }
 YAML
 
-kubectl -n "$NS" rollout status deploy/registry-backend --timeout=180s
-kubectl -n "$NS" rollout status deploy/registry-proxy --timeout=180s
+kubectl -n "$NS" rollout status deploy/registry-backend --timeout="$ROLLOUT_TIMEOUT"
+kubectl -n "$NS" rollout status deploy/registry-proxy --timeout="$ROLLOUT_TIMEOUT"
 
 echo "==> cosign key pair"
 mkdir -p "$KEY_DIR"
