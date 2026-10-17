@@ -74,7 +74,12 @@ case "$ACTION" in
     ;;
   delay)
     kubectl -n "$NS" set env deploy/registry-proxy "DELAY_MS=$DELAY_MS" >/dev/null
-    kubectl -n "$NS" rollout status deploy/registry-proxy --timeout=120s
+    # Same generous timeout as the initial rollout. A hardcoded 120s here killed
+    # a run mid-matrix: changing the delay restarts the proxy pod, and on a host
+    # under memory pressure that took longer than two minutes. Losing ten
+    # measured cells to a pod that was merely slow to come back is not a trade
+    # worth making.
+    kubectl -n "$NS" rollout status deploy/registry-proxy --timeout="$ROLLOUT_TIMEOUT"
     echo "registry delay set to ${DELAY_MS}ms"
     exit 0
     ;;
