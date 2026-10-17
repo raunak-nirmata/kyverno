@@ -73,7 +73,7 @@ case "$ACTION" in
 esac
 
 need kubectl
-need docker
+need crane
 need cosign
 
 echo "==> namespace $NS"
@@ -183,6 +183,9 @@ fi
 echo "==> port-forward for push (localhost:$PUSH_PORT)"
 kubectl -n "$NS" port-forward svc/registry "$PUSH_PORT:5000" >/tmp/regpush-pf.log 2>&1 &
 PF=$!
+# Detach from job control so the shell does not print "Terminated" when the trap
+# kills it. That line reads like a failure and would camouflage a real one.
+disown "$PF" 2>/dev/null || true
 trap 'kill $PF 2>/dev/null || true' EXIT
 for _ in $(seq 1 60); do
   curl -sf "http://127.0.0.1:$PUSH_PORT/v2/" >/dev/null 2>&1 && break
@@ -192,6 +195,10 @@ curl -sf "http://127.0.0.1:$PUSH_PORT/v2/" >/dev/null 2>&1 \
   || { echo "FATAL: registry not reachable through port-forward on $PUSH_PORT"; exit 1; }
 
 echo "==> build, push, sign $IMAGE_COUNT images"
+# crane, not docker. On Docker Desktop the daemon runs inside its own VM, so a
+# `docker push` to 127.0.0.1:$PUSH_PORT resolves to the VM's loopback and never
+# reaches the kubectl port-forward listening on the host's. crane runs in this
+# process, on the host, and speaks plain HTTP with --insecure.
 BUILD="$(mktemp -d)"
 trap 'kill $PF 2>/dev/null || true; rm -rf "$BUILD"' EXIT
 for i in $(seq 1 "$IMAGE_COUNT"); do
@@ -199,20 +206,23 @@ for i in $(seq 1 "$IMAGE_COUNT"); do
   # One distinct byte-string per image so every tag resolves to its own digest
   # and forces its own manifest fetch. Identical content would collapse them.
   printf 'ivpol-benchmark image %s\n' "$i" > "$BUILD/marker"
-  cat > "$BUILD/Dockerfile" <<EOF
-FROM scratch
-COPY marker /marker
-EOF
-  docker build -q -t "127.0.0.1:$PUSH_PORT/$REPO:$tag" "$BUILD" >/dev/null
-  docker push -q "127.0.0.1:$PUSH_PORT/$REPO:$tag" >/dev/null
-  cosign sign --yes --tlog-upload=false \
+  ( cd "$BUILD" && tar cf layer.tar marker )
+  crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$REPO:$tag" --insecure >/dev/null 2>&1 \
+    || { echo "FATAL: crane could not push $REPO:$tag"; exit 1; }
+  # --use-signing-config=false is required with cosign v3: --tlog-upload=false
+  # alone is refused, because a default signing config naming a transparency log
+  # is in play. There is no Rekor here by design.
+  cosign sign --yes --use-signing-config=false --tlog-upload=false \
+    --allow-insecure-registry \
     --key "$KEY_DIR/cosign.key" \
-    "127.0.0.1:$PUSH_PORT/$REPO:$tag" >/dev/null 2>&1
+    "127.0.0.1:$PUSH_PORT/$REPO:$tag" >/dev/null 2>&1 \
+    || { echo "FATAL: cosign could not sign $REPO:$tag"; exit 1; }
   printf '  signed %s:%s\r' "$REPO" "$tag"
 done
 echo
 echo "==> verifying one image through the same path Kyverno will use"
 cosign verify --key "$KEY_DIR/cosign.pub" --insecure-ignore-tlog=true \
+  --allow-insecure-registry \
   "127.0.0.1:$PUSH_PORT/$REPO:v1" >/dev/null 2>&1 \
   || { echo "FATAL: signature does not verify; every cell would measure a failing policy"; exit 1; }
 
