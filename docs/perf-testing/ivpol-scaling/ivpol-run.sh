@@ -270,6 +270,17 @@ except Exception: print(0)' 2>/dev/null)
   fi
   echo "$pct" > "$dir/manifest-coverage-pct.txt"
   echo "$failed" > "$dir/admission-failed-rate.txt"
+
+  # (d) Did the admission controller stay up? A crash and a saturation look
+  #     identical from the client - both are a wall of failed requests - but
+  #     they are completely different findings. Record the restart count so the
+  #     caller can tell them apart instead of guessing.
+  local restarts
+  restarts=$(kubectl -n kyverno get pods -l app.kubernetes.io/component=admission-controller \
+    -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{"\n"}{end}' 2>/dev/null \
+    | awk '{s+=$1} END {print s+0}')
+  echo "$restarts" > "$dir/restarts.txt"
+  echo "admission controller restarts so far: $restarts"
 }
 
 # ---------------------------------------------------------------- install

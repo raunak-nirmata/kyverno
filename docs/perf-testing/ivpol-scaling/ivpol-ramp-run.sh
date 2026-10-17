@@ -63,6 +63,8 @@ for r in $(seq 1 "$ROUNDS"); do
   IMAGE_COUNT="$IMAGE_COUNT" KIND_CLUSTER="$cluster" bash "$HERE/registry/setup-registry.sh" >>"$LOG" 2>&1
 
   saturated=""
+  crashed=""
+  prev_restarts=0
   first=1
   for vus in $STEPS; do
     echo "  [step] ${vus} VUs" | tee -a "$LOG"
@@ -83,16 +85,33 @@ for r in $(seq 1 "$ROUNDS"); do
     RESULTS_DIR="$step_dir" \
       bash "$HERE/ivpol-run.sh" >>"$LOG" 2>&1
 
-    # The cell archives its own failure rate; read it back to decide whether to
-    # keep climbing.
+    # The cell archives its own failure rate and restart count; read both back.
     rate_file=$(find "$step_dir" -name admission-failed-rate.txt | head -1)
     rate=$(cat "$rate_file" 2>/dev/null || echo "-1")
     iters=$(cat "$(find "$step_dir" -name iterations.txt | head -1)" 2>/dev/null || echo 0)
+    restarts=$(cat "$(find "$step_dir" -name restarts.txt | head -1)" 2>/dev/null || echo 0)
+    secs="${LOAD%s}"
     # Throughput is the number the talk wants: admissions per second sustained.
-    rps=$(python3 -c "print(f'{$iters / 60.0:.1f}')" 2>/dev/null || echo "")
-    echo "    vus=$vus iterations=$iters rps=$rps failure_rate=$rate" | tee -a "$LOG"
-    { echo "vus=$vus"; echo "iterations=$iters"; echo "rps=$rps"; echo "failure_rate=$rate"; } \
-      > "$step_dir/ramp-step.txt"
+    rps=$(python3 -c "print(f'{$iters / max(1,$secs):.1f}')" 2>/dev/null || echo "")
+    echo "    vus=$vus iterations=$iters rps=$rps failure_rate=$rate restarts=$restarts" | tee -a "$LOG"
+    { echo "vus=$vus"; echo "iterations=$iters"; echo "rps=$rps"
+      echo "failure_rate=$rate"; echo "restarts=$restarts"; } > "$step_dir/ramp-step.txt"
+
+    # A crash and a saturation both show up as a wall of failed requests, and
+    # they mean opposite things: one is a bug, the other is a capacity limit.
+    # Restarts tell them apart, so check that first and name it in the result.
+    if (( restarts > prev_restarts )); then
+      echo "  [CRASHED] admission controller restarted at ${vus} VUs (restarts ${prev_restarts} -> ${restarts})" | tee -a "$LOG"
+      echo "            this is a crash, not saturation — see the pod's previous logs" | tee -a "$LOG"
+      kubectl -n kyverno logs deploy/kyverno-admission-controller --previous --tail=40 2>/dev/null \
+        | sed 's/\x1b\[[0-9;]*m//g' | grep -iE "fatal error|panic|concurrent map" | head -3 \
+        | tee -a "$LOG" | sed 's/^/            /'
+      kubectl -n kyverno logs deploy/kyverno-admission-controller --previous --tail=120 2>/dev/null \
+        > "$step_dir/crash-log.txt" 2>&1 || true
+      crashed="$vus"
+      break
+    fi
+    prev_restarts="$restarts"
 
     if [[ "$rate" != "-1" ]] && python3 -c "import sys; sys.exit(0 if float('$rate') > float('$FAIL_THRESHOLD') else 1)"; then
       echo "  [saturated] failure rate $rate exceeds $FAIL_THRESHOLD at ${vus} VUs — stopping" | tee -a "$LOG"
@@ -104,12 +123,13 @@ for r in $(seq 1 "$ROUNDS"); do
   { echo "version=$KYVERNO_VERSION"; echo "chart=$KYVERNO_CHART"
     echo "images=$IMAGES"; echo "delay_ms=$DELAYS"; echo "cache_mode=$CACHE_MODE"
     echo "steps=$STEPS"; echo "saturated_at_vus=${saturated:-none}"
+    echo "crashed_at_vus=${crashed:-none}"
     echo "fail_threshold=$FAIL_THRESHOLD"
   } > "$base/round-meta.txt"
   touch "$base/.complete"
 
-  if [[ -z "$saturated" ]]; then
-    echo "  [note] never saturated within [$STEPS] — the ceiling is above the top step" | tee -a "$LOG"
+  if [[ -z "$saturated" && -z "$crashed" ]]; then
+    echo "  [note] neither saturated nor crashed within [$STEPS] — the ceiling is above the top step" | tee -a "$LOG"
   fi
 
   CLUSTER="$cluster" ACTION=delete bash "$SIBLING/setup-mac.sh" >>"$LOG" 2>&1 || true
