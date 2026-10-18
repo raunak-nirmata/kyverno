@@ -1,0 +1,366 @@
+{
+  "schema": 1,
+  "tag_scanned": "v1.18.0-n4k.nirmata.7",
+  "release_branch": "release-1.18-n4k",
+  "generated_at": "2026-10-13T10:40:00Z",
+  "scanners": [
+    "trivy",
+    "grype"
+  ],
+  "findings": [
+    {
+      "id": "CVE-2026-78667",
+      "severity": "HIGH",
+      "route": "go-toolchain",
+      "action": "Bump Go toolchain",
+      "status": "fixed",
+      "pkg": "stdlib",
+      "installed": "v1.26.7",
+      "fixed": "1.26.9",
+      "images": [
+        "background-controller",
+        "cleanup-controller",
+        "kubectl-kyverno",
+        "kyverno-init",
+        "kyverno",
+        "readiness-checker",
+        "reports-controller"
+      ],
+      "notes": "Fixed: go directive and all 6 FIPS builder images bumped 1.26.7 -> 1.26.9."
+    },
+    {
+      "id": "CVE-2026-78669",
+      "severity": "HIGH",
+      "route": "go-module",
+      "action": "Bump module version",
+      "status": "fixed",
+      "pkg": "golang.org/x/net",
+      "installed": "v0.58.0",
+      "fixed": "v0.60.0",
+      "images": [
+        "background-controller",
+        "cleanup-controller",
+        "kubectl-kyverno",
+        "kyverno-init",
+        "kyverno",
+        "readiness-checker",
+        "reports-controller"
+      ],
+      "notes": "Fixed: golang.org/x/net bumped v0.58.0 -> v0.60.0 (unblocked by the Go 1.26.9 toolchain bump)."
+    },
+    {
+      "id": "CVE-2026-78669",
+      "severity": "HIGH",
+      "route": "go-toolchain",
+      "action": "Bump Go toolchain",
+      "status": "fixed",
+      "pkg": "stdlib",
+      "installed": "v1.26.7",
+      "fixed": "1.26.9",
+      "images": [
+        "background-controller",
+        "cleanup-controller",
+        "kubectl-kyverno",
+        "kyverno-init",
+        "kyverno",
+        "readiness-checker",
+        "reports-controller"
+      ],
+      "notes": "Fixed: go directive and all 6 FIPS builder images bumped 1.26.7 -> 1.26.9."
+    },
+    {
+      "id": "CVE-2026-97031",
+      "severity": "HIGH",
+      "route": "go-toolchain",
+      "action": "Bump Go toolchain",
+      "status": "fixed",
+      "pkg": "stdlib",
+      "installed": "v1.26.7",
+      "fixed": "1.26.9",
+      "images": [
+        "background-controller",
+        "cleanup-controller",
+        "kubectl-kyverno",
+        "kyverno-init",
+        "kyverno",
+        "readiness-checker",
+        "reports-controller"
+      ],
+      "notes": "Fixed: go directive and all 6 FIPS builder images bumped 1.26.7 -> 1.26.9."
+    },
+    {
+      "id": "GO-2026-6603",
+      "severity": "HIGH",
+      "route": "go-module",
+      "action": "Bump module version",
+      "status": "fixed",
+      "pkg": "golang.org/x/net",
+      "installed": "v0.58.0",
+      "fixed": "v0.60.0",
+      "images": [
+        "background-controller",
+        "cleanup-controller",
+        "kubectl-kyverno",
+        "kyverno-init",
+        "kyverno",
+        "readiness-checker",
+        "reports-controller"
+      ],
+      "notes": "Fixed: golang.org/x/net bumped v0.58.0 -> v0.60.0 (unblocked by the Go 1.26.9 toolchain bump)."
+    },
+    {
+      "id": "GO-2026-6603",
+      "severity": "HIGH",
+      "route": "go-toolchain",
+      "action": "Bump Go toolchain",
+      "status": "fixed",
+      "pkg": "stdlib",
+      "installed": "go1.26.7",
+      "fixed": "1.26.9",
+      "images": [
+        "background-controller",
+        "cleanup-controller",
+        "kubectl-kyverno",
+        "kyverno-init",
+        "kyverno",
+        "readiness-checker",
+        "reports-controller"
+      ],
+      "notes": "Fixed: go directive and all 6 FIPS builder images bumped 1.26.7 -> 1.26.9."
+    },
+    {
+      "id": "GO-2026-6604",
+      "severity": "CRITICAL",
+      "route": "go-toolchain",
+      "action": "Bump Go toolchain",
+      "status": "fixed",
+      "pkg": "stdlib",
+      "installed": "go1.26.7",
+      "fixed": "1.26.9",
+      "images": [
+        "background-controller",
+        "cleanup-controller",
+        "kubectl-kyverno",
+        "kyverno-init",
+        "kyverno",
+        "reports-controller"
+      ],
+      "notes": "Fixed: go directive and all 6 FIPS builder images bumped 1.26.7 -> 1.26.9."
+    },
+    {
+      "id": "GO-2026-6605",
+      "severity": "HIGH",
+      "route": "go-toolchain",
+      "action": "Bump Go toolchain",
+      "status": "fixed",
+      "pkg": "stdlib",
+      "installed": "go1.26.7",
+      "fixed": "1.26.9",
+      "images": [
+        "background-controller",
+        "cleanup-controller",
+        "kubectl-kyverno",
+        "kyverno-init",
+        "kyverno",
+        "readiness-checker",
+        "reports-controller"
+      ],
+      "notes": "Fixed: go directive and all 6 FIPS builder images bumped 1.26.7 -> 1.26.9."
+    },
+    {
+      "id": "GO-2026-6607",
+      "severity": "HIGH",
+      "route": "go-toolchain",
+      "action": "Bump Go toolchain",
+      "status": "fixed",
+      "pkg": "stdlib",
+      "installed": "go1.26.7",
+      "fixed": "1.26.9",
+      "images": [
+        "background-controller",
+        "cleanup-controller",
+        "kubectl-kyverno",
+        "kyverno-init",
+        "kyverno",
+        "readiness-checker",
+        "reports-controller"
+      ],
+      "notes": "Fixed: go directive and all 6 FIPS builder images bumped 1.26.7 -> 1.26.9."
+    },
+    {
+      "id": "GO-2026-6608",
+      "severity": "HIGH",
+      "route": "go-toolchain",
+      "action": "Bump Go toolchain",
+      "status": "fixed",
+      "pkg": "stdlib",
+      "installed": "go1.26.7",
+      "fixed": "1.26.9",
+      "images": [
+        "background-controller",
+        "cleanup-controller",
+        "kubectl-kyverno",
+        "kyverno-init",
+        "kyverno",
+        "readiness-checker",
+        "reports-controller"
+      ],
+      "notes": "Fixed: go directive and all 6 FIPS builder images bumped 1.26.7 -> 1.26.9."
+    },
+    {
+      "id": "GO-2026-6609",
+      "severity": "HIGH",
+      "route": "go-toolchain",
+      "action": "Bump Go toolchain",
+      "status": "fixed",
+      "pkg": "stdlib",
+      "installed": "go1.26.7",
+      "fixed": "1.26.9",
+      "images": [
+        "cleanup-controller",
+        "kyverno"
+      ],
+      "notes": "Fixed: go directive and all 6 FIPS builder images bumped 1.26.7 -> 1.26.9."
+    },
+    {
+      "id": "GO-2026-6610",
+      "severity": "HIGH",
+      "route": "go-module",
+      "action": "Bump module version",
+      "status": "fixed",
+      "pkg": "golang.org/x/net",
+      "installed": "v0.58.0",
+      "fixed": "v0.60.0",
+      "images": [
+        "background-controller",
+        "cleanup-controller",
+        "kubectl-kyverno",
+        "kyverno-init",
+        "kyverno",
+        "readiness-checker",
+        "reports-controller"
+      ],
+      "notes": "Fixed: golang.org/x/net bumped v0.58.0 -> v0.60.0 (unblocked by the Go 1.26.9 toolchain bump)."
+    },
+    {
+      "id": "GO-2026-6610",
+      "severity": "HIGH",
+      "route": "go-toolchain",
+      "action": "Bump Go toolchain",
+      "status": "fixed",
+      "pkg": "stdlib",
+      "installed": "go1.26.7",
+      "fixed": "1.26.9",
+      "images": [
+        "background-controller",
+        "cleanup-controller",
+        "kubectl-kyverno",
+        "kyverno-init",
+        "kyverno",
+        "readiness-checker",
+        "reports-controller"
+      ],
+      "notes": "Fixed: go directive and all 6 FIPS builder images bumped 1.26.7 -> 1.26.9."
+    },
+    {
+      "id": "GO-2026-6611",
+      "severity": "HIGH",
+      "route": "go-module",
+      "action": "Bump module version",
+      "status": "fixed",
+      "pkg": "golang.org/x/net",
+      "installed": "v0.58.0",
+      "fixed": "v0.60.0",
+      "images": [
+        "background-controller",
+        "cleanup-controller",
+        "kubectl-kyverno",
+        "kyverno-init",
+        "kyverno",
+        "readiness-checker",
+        "reports-controller"
+      ],
+      "notes": "Fixed: golang.org/x/net bumped v0.58.0 -> v0.60.0 (unblocked by the Go 1.26.9 toolchain bump)."
+    },
+    {
+      "id": "GO-2026-6611",
+      "severity": "HIGH",
+      "route": "go-toolchain",
+      "action": "Bump Go toolchain",
+      "status": "fixed",
+      "pkg": "stdlib",
+      "installed": "go1.26.7",
+      "fixed": "1.26.9",
+      "images": [
+        "background-controller",
+        "cleanup-controller",
+        "kubectl-kyverno",
+        "kyverno-init",
+        "kyverno",
+        "readiness-checker",
+        "reports-controller"
+      ],
+      "notes": "Fixed: go directive and all 6 FIPS builder images bumped 1.26.7 -> 1.26.9."
+    },
+    {
+      "id": "GO-2026-6612",
+      "severity": "CRITICAL",
+      "route": "go-module",
+      "action": "Bump module version",
+      "status": "fixed",
+      "pkg": "golang.org/x/net",
+      "installed": "v0.58.0",
+      "fixed": "v0.60.0",
+      "images": [
+        "background-controller",
+        "cleanup-controller",
+        "kubectl-kyverno",
+        "kyverno-init",
+        "kyverno",
+        "readiness-checker",
+        "reports-controller"
+      ],
+      "notes": "Fixed: golang.org/x/net bumped v0.58.0 -> v0.60.0 (unblocked by the Go 1.26.9 toolchain bump)."
+    },
+    {
+      "id": "GO-2026-6612",
+      "severity": "CRITICAL",
+      "route": "go-toolchain",
+      "action": "Bump Go toolchain",
+      "status": "fixed",
+      "pkg": "stdlib",
+      "installed": "go1.26.7",
+      "fixed": "1.26.9",
+      "images": [
+        "background-controller",
+        "cleanup-controller",
+        "kubectl-kyverno",
+        "kyverno-init",
+        "kyverno",
+        "readiness-checker",
+        "reports-controller"
+      ],
+      "notes": "Fixed: go directive and all 6 FIPS builder images bumped 1.26.7 -> 1.26.9."
+    },
+    {
+      "id": "GO-2026-6613",
+      "severity": "HIGH",
+      "route": "go-toolchain",
+      "action": "Bump Go toolchain",
+      "status": "fixed",
+      "pkg": "stdlib",
+      "installed": "go1.26.7",
+      "fixed": "1.26.9",
+      "images": [
+        "background-controller",
+        "cleanup-controller",
+        "kubectl-kyverno",
+        "kyverno-init",
+        "kyverno",
+        "readiness-checker",
+        "reports-controller"
+      ],
+      "notes": "Fixed: go directive and all 6 FIPS builder images bumped 1.26.7 -> 1.26.9."
+    }
+  ]
+}
