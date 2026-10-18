@@ -19,6 +19,30 @@ import { Rate } from 'k6/metrics';
 // (pkg/image/verification/evaluator/policy.go:180 vs
 // pkg/cel/libs/imageverify/impl.go:168).
 
+// Pace iterations with k6's constant-arrival-rate executor rather than --rps.
+// --rps throttles k6's own HTTP module; kubernetes.create() comes from
+// xk6-kubernetes and is not counted by it, so --rps silently does nothing here -
+// a cell capped at 102 req/s ran at 134. This executor controls iteration
+// starts directly, which is the quantity that needs limiting: each iteration is
+// one Pod create, and Kyverno opens roughly 3.4 registry connections per image
+// in it. Without a cap the 0ms lane outruns the pod's ephemeral-port budget.
+export const options = __ENV.TARGET_RPS
+    ? {
+          scenarios: {
+              paced: {
+                  executor: 'constant-arrival-rate',
+                  rate: parseInt(__ENV.TARGET_RPS, 10),
+                  timeUnit: '1s',
+                  duration: __ENV.DURATION || '60s',
+                  // Enough VUs that the arrival rate is actually achievable:
+                  // a slow cell (16 images at +100ms) needs many in flight.
+                  preAllocatedVUs: parseInt(__ENV.PREALLOC_VUS || '50', 10),
+                  maxVUs: parseInt(__ENV.MAX_VUS || '200', 10),
+              },
+          },
+      }
+    : {};
+
 const IMAGES_PER_POD = parseInt(__ENV.IMAGES_PER_POD || '1', 10);
 const REGISTRY_HOST = __ENV.REGISTRY_HOST || 'registry.bench-registry.svc.cluster.local:5000';
 const REPO = __ENV.REPO || 'bench/signed';

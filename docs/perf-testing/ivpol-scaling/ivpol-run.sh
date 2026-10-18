@@ -220,7 +220,8 @@ wait_until_serving() {
   local attempt rate
   for attempt in $(seq 1 "$budget"); do
     IMAGES_PER_POD="$images" REGISTRY_HOST="$REGISTRY_HOST" REPO="$REPO" TEST_NAMESPACE="$TEST_NS" \
-      "$K6" run "$SCRIPT_JS" --vus "$VUS" --duration 10s --quiet \
+      TARGET_RPS="${SERVING_RPS:-10}" DURATION=10s \
+      "$K6" run "$SCRIPT_JS" --quiet \
       --summary-export /tmp/ivpol-serving.json >/dev/null 2>&1 || true
     rate=$(python3 -c '
 import json
@@ -487,6 +488,21 @@ touch_policy() {
 run_cell() {
   local images="$1" delay="$2"
   local cell="img${images}-d${delay}-${CACHE_MODE}"
+
+  # Arrival cap for every k6 invocation in this cell, warm-up included.
+  # Computed here rather than beside the measured run because the warm-up uses
+  # it first, and an unset value would abort the cell under set -u.
+  #
+  # Lowering VUs does not control this: at 0ms a request finishes in tens of
+  # milliseconds, so even two VUs sustain hundreds of requests/s, and since
+  # Kyverno opens ~3.4 connections per image the connection rate climbs with
+  # image count - measured 401/s at one image, 504/s at two, and past the
+  # ceiling by four, where the cell failed 31% of admissions. The ceiling is the
+  # pod's ephemeral range over a 60s TIME_WAIT, about 470/s.
+  local conns_per_req rps
+  conns_per_req=$(python3 -c "print(max(1.0, 3.4 * $images))")
+  rps=$(python3 -c "print(max(1, int(${MAX_CONN_RATE:-350} / $conns_per_req)))")
+  echo "arrival cap: ${rps} req/s (~$(python3 -c "print(int($rps * $conns_per_req))")/s connections, budget ${MAX_CONN_RATE:-350})"
   local dir="$RESULTS_DIR/$cell"; mkdir -p "$dir"
   echo
   echo "==================== cell $cell ===================="
@@ -502,7 +518,8 @@ run_cell() {
   # A short burst absorbs it, and its results are thrown away.
   echo "warm-up (discarded): ${WARMUP:-10s}"
   IMAGES_PER_POD="$images" REGISTRY_HOST="$REGISTRY_HOST" REPO="$REPO" TEST_NAMESPACE="$TEST_NS" \
-    "$K6" run "$SCRIPT_JS" --vus "$VUS" --duration "${WARMUP:-10s}" --quiet >/dev/null 2>&1 || true
+    TARGET_RPS="$rps" DURATION="${WARMUP:-10s}" \
+    "$K6" run "$SCRIPT_JS" --quiet >/dev/null 2>&1 || true
   kubectl delete pods -n "$TEST_NS" --all --ignore-not-found --wait=false >/dev/null 2>&1 || true
 
   [[ "$CACHE_MODE" == "postedit" ]] && touch_policy
@@ -513,34 +530,16 @@ run_cell() {
       kubectl top pod -n kyverno --no-headers 2>/dev/null | awk -v ts="$ts" '{print ts","$1","$2","$3}' >> "$topcsv"
       sleep 2; done ) & local SPID=$!
 
-  # Cap the arrival rate so the cell stays inside the connection budget.
-  #
-  # Lowering VUs does not do this. At 0ms injected delay a request finishes in
-  # tens of milliseconds, so even two VUs sustain hundreds of requests/s, and
-  # since Kyverno opens ~3.4 connections per image the connection rate climbs
-  # with image count: measured 401/s at one image, 504/s at two, and past the
-  # ceiling by four, where the cell failed 31% of admissions. The ceiling is the
-  # pod's ephemeral range over a 60s TIME_WAIT, about 470/s.
-  #
-  # So the cap is per-cell: target connections/s divided by connections per
-  # request. The injected-latency lanes are naturally slower than this and are
-  # unaffected; it only binds at 0ms, which is exactly where it is needed.
-  local conns_per_req rps
-  conns_per_req=$(python3 -c "print(max(1.0, 3.4 * $images))")
-  rps=$(python3 -c "print(max(1, int(${MAX_CONN_RATE:-350} / $conns_per_req)))")
-  echo "arrival cap: ${rps} req/s (~$(python3 -c "print(int($rps * $conns_per_req))")/s connections, budget ${MAX_CONN_RATE:-350})"
-
-  local load_flags
-  if [[ "$LOAD" =~ ^[0-9]+s$ ]]; then
-    load_flags=(--vus "$VUS" --duration "$LOAD" --rps "$rps")
-  else
-    load_flags=(--vus "$VUS" --iterations "$LOAD" --rps "$rps")
-  fi
+  # The script's own constant-arrival-rate scenario does the pacing, driven by
+  # TARGET_RPS and DURATION below. No --vus/--duration here: those would define a
+  # second scenario and k6 refuses the combination.
+  local load_flags=()
   local t0 t1
   t0=$(date +%s)
   IMAGES_PER_POD="$images" REGISTRY_HOST="$REGISTRY_HOST" REPO="$REPO" TEST_NAMESPACE="$TEST_NS" \
+  TARGET_RPS="$rps" DURATION="$LOAD" PREALLOC_VUS="${PREALLOC_VUS:-50}" \
   KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}" "$K6" run "$SCRIPT_JS" \
-    "${load_flags[@]}" \
+    ${load_flags[@]+"${load_flags[@]}"} \
     --summary-trend-stats "$TREND_STATS" \
     --summary-export "$dir/k6-summary.json" 2>&1 | tee "$dir/k6-output.log"
   t1=$(date +%s)
