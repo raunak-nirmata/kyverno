@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """TCP proxy in front of the benchmark registry: injects latency, counts requests.
 
-Two jobs, both load-bearing for the ivpol measurement:
+Three jobs, all load-bearing for the ivpol measurement:
 
 1. **Latency injection.** The serial-vs-parallel image prefetch difference
    (#17313) is invisible against a local registry, because a round trip that
@@ -12,6 +12,14 @@ Two jobs, both load-bearing for the ivpol measurement:
 2. **Request counting.** Every cell asserts how many registry requests actually
    happened. Without that, a cell where verification silently short-circuited -
    a match failure, an unexpected cache hit - looks exactly like a fast one.
+
+3. **TLS termination.** The proxy terminates TLS from the client (Kyverno) using
+   asyncio's `StreamWriter.start_tls()`, and keeps speaking plain HTTP to the
+   registry backend. asyncio does TLS below the stream API, so the decrypted
+   bytes still flow through the same `pump()`, the same request-line regex, and
+   the same per-request delay. A failed handshake counts as
+   `tls_handshake_failed` rather than vanishing silently, which is why
+   `start_tls` is used instead of `start_server(ssl=...)` (see `handle()`).
 
 The proxy is in path for *every* cell, including the 0 ms baseline, so the
 network topology is identical across lanes and the counter is always available.
@@ -28,13 +36,27 @@ import asyncio
 import json
 import os
 import re
+import ssl
+import sys
 from collections import Counter
+
+if sys.version_info < (3, 11):
+    sys.exit(f"delay-proxy requires Python 3.11+ for start_tls(); running {sys.version}")
 
 UPSTREAM_HOST = os.environ.get("UPSTREAM_HOST", "127.0.0.1")
 UPSTREAM_PORT = int(os.environ.get("UPSTREAM_PORT", "5000"))
 LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "5000"))
 STATS_PORT = int(os.environ.get("STATS_PORT", "5001"))
 DELAY_MS = int(os.environ.get("DELAY_MS", "0"))
+TLS_CERT = os.environ.get("TLS_CERT")
+TLS_KEY = os.environ.get("TLS_KEY")
+if not TLS_CERT or not TLS_KEY:
+    sys.exit("TLS_CERT and TLS_KEY must both be set; a proxy that falls back to plaintext hides the failure this project keeps hitting")
+
+# No ALPN: Go would otherwise negotiate h2, and the request-line counter only
+# understands HTTP/1.1 text, so it would go blind. Never call set_alpn_protocols.
+_tls_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+_tls_ctx.load_cert_chain(TLS_CERT, TLS_KEY)
 
 # Request lines, so a chunk carrying a blob body is not miscounted as a request.
 REQUEST_LINE = re.compile(rb"(?:^|\r\n)(GET|HEAD|POST|PUT|PATCH|DELETE) ([^ ]+) HTTP/")
@@ -91,6 +113,19 @@ async def pump(reader, writer, *, delay: bool) -> None:
 
 async def handle(client_reader, client_writer) -> None:
     counts["connections"] += 1
+    # start_tls, not start_server(ssl=...): a failed handshake under start_server
+    # is an OSError that asyncio drops before it reaches the handler (sslproto
+    # only logs it in debug mode), so a plaintext probe would be invisible. Here
+    # it is an exception in our own coroutine, so it becomes a counter.
+    try:
+        await client_writer.start_tls(_tls_ctx, ssl_handshake_timeout=10)
+    except (ssl.SSLError, OSError, asyncio.TimeoutError):
+        counts["tls_handshake_failed"] += 1
+        try:
+            client_writer.close()
+        except Exception:
+            pass
+        return
     try:
         up_reader, up_writer = await asyncio.open_connection(UPSTREAM_HOST, UPSTREAM_PORT)
     except OSError:
