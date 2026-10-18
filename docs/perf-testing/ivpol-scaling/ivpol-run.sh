@@ -244,6 +244,16 @@ except Exception:
     echo "  not serving yet (attempt $attempt/$budget, failure rate $rate) — waiting"
     sleep 15
   done
+  # ALLOW_FAILURES means the failure path is what this cell measures - the
+  # crash-boundary and two-version sweeps, where a controller that never
+  # stabilises is the result rather than a broken rig. Aborting here would
+  # discard it, so record the shortfall and let the cell run.
+  if [[ "${ALLOW_FAILURES:-}" == "1" ]]; then
+    echo "WARN: never reached a serving state after $budget bursts (last rate $rate)."
+    echo "      ALLOW_FAILURES is set, so this is recorded as a crash marker, not an abort."
+    echo "crash-marker" > "${RESULTS_DIR:-/tmp}/never-served.txt" 2>/dev/null || true
+    return 0
+  fi
   echo "FATAL: still failing after $budget bursts; the controller never reached a"
   echo "       state where it could serve the workload. Measuring now would record"
   echo "       the failure path, not verification."
