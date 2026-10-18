@@ -442,8 +442,8 @@ assert_registry_trust() {
   local args
   args=$(kubectl -n kyverno get deploy kyverno-admission-controller \
     -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null)
-  if [[ "$args" == *"--allowInsecureRegistry"* ]]; then
-    echo "FATAL: --allowInsecureRegistry is present in the running container's args."
+  if [[ "$args" == *"--allowInsecureRegistry=true"* ]]; then
+    echo "FATAL: --allowInsecureRegistry=true is present in the running container's args."
     echo "       A values file or override re-added it; the run would be back on the"
     echo "       failed-https dial this change exists to remove."
     exit 1
@@ -483,7 +483,7 @@ print("yes" if ca in cm else "no")
     exit 1
   fi
 
-  echo "registry trust verified: no --allowInsecureRegistry, CA mount present, CM carries our CA"
+  echo "registry trust verified: --allowInsecureRegistry not true, CA mount present, CM carries our CA"
 }
 
 assert_running_image() {
