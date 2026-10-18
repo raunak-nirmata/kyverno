@@ -182,6 +182,27 @@ pod_json() {
     "$2" "$TEST_NS" "$1"
 }
 
+get_restart_count() {
+  # Cumulative restartCount summed across admission-controller containers.
+  kubectl -n kyverno get pods -l app.kubernetes.io/component=admission-controller \
+    -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{"\n"}{end}' 2>/dev/null \
+    | awk '{s+=$1} END {print s+0}'
+}
+
+capture_crash_evidence() {
+  # $1 = destination dir. Writes the previous container's log, its termination
+  # reason/exit code, and a grepped signature.
+  local outdir="$1"
+  mkdir -p "$outdir" 2>/dev/null || true
+  kubectl -n kyverno logs deploy/kyverno-admission-controller --previous --tail=200 \
+    > "$outdir/crash-previous.log" 2>&1 || true
+  kubectl -n kyverno get pods -l app.kubernetes.io/component=admission-controller \
+    -o jsonpath='{range .items[*]}{.status.containerStatuses[0].lastState.terminated.reason}{" exit="}{.status.containerStatuses[0].lastState.terminated.exitCode}{"\n"}{end}' \
+    > "$outdir/crash-reason.txt" 2>&1 || true
+  sed 's/\x1b\[[0-9;]*m//g' "$outdir/crash-previous.log" 2>/dev/null \
+    | grep -iE "fatal error|panic:|concurrent map" | head -3 > "$outdir/crash-signature.txt" || true
+}
+
 verify_ivpol_active() {
   # Negative control: an image the policy matches but which carries no valid
   # signature MUST be rejected. If it is admitted, ivpol is not on the admission
@@ -261,11 +282,12 @@ except Exception:
 }
 
 assert_cell_valid() {
-  # $1 = cell dir, $2 = images per pod
+  # $1 = cell dir, $2 = images per pod, $3 = restarts sampled at cell t0,
+  # $4 = cell t0 as a unix epoch.
   #
   # Three things have to be true for a cell to be a measurement of image
   # verification rather than a number that merely looks like one.
-  local dir="$1" images="$2"
+  local dir="$1" images="$2" restarts_t0="$3" cell_t0_epoch="$4"
 
   # (a) The load actually ran. With duration-based cells the iteration count is
   #     an output, not an input, so it has to be read back rather than assumed.
@@ -303,22 +325,24 @@ PY2
   # fails its gate is precisely the cell where "did the engine crash or did it
   # merely saturate" matters, and writing this only on the success path meant
   # the answer was missing exactly when it was needed.
-  local restarts
-  restarts=$(kubectl -n kyverno get pods -l app.kubernetes.io/component=admission-controller \
-    -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{"\n"}{end}' 2>/dev/null \
-    | awk '{s+=$1} END {print s+0}')
-  echo "$restarts" > "$dir/restarts.txt"
-  echo "admission controller restarts so far: $restarts"
+  #
+  # restarts.txt is cumulative since the pod started, so a crash in an earlier
+  # cell of the same slot stays on the counter forever and every later cell
+  # inherits it. The delta since this cell's own t0 is what actually isolates
+  # this cell's crash signal; that is what gates and downstream reports read.
+  local restarts_t1 restarts_delta
+  restarts_t1=$(get_restart_count)
+  restarts_delta=$(( restarts_t1 - restarts_t0 ))
+  # A negative delta means the pod object itself was replaced (eviction,
+  # reschedule) and restartCount reset; the delta can't be trusted then.
+  (( restarts_delta < 0 )) && restarts_delta=0
+  echo "$restarts_t1" > "$dir/restarts-cumulative.txt"
+  echo "$restarts_delta" > "$dir/restarts.txt"
+  echo "admission controller restarts: cumulative=$restarts_t1 this-cell-delta=$restarts_delta"
   # A restart count without a cause cannot tell a data race from an OOM kill,
   # and the cluster is deleted at the end of the slot, so capture it now.
-  if (( restarts > 0 )); then
-    kubectl -n kyverno logs deploy/kyverno-admission-controller --previous --tail=200 \
-      > "$dir/crash-previous.log" 2>&1 || true
-    kubectl -n kyverno get pods -l app.kubernetes.io/component=admission-controller \
-      -o jsonpath='{range .items[*]}{.status.containerStatuses[0].lastState.terminated.reason}{" exit="}{.status.containerStatuses[0].lastState.terminated.exitCode}{"\n"}{end}' \
-      > "$dir/crash-reason.txt" 2>&1 || true
-    sed 's/\x1b\[[0-9;]*m//g' "$dir/crash-previous.log" 2>/dev/null \
-      | grep -iE "fatal error|panic:|concurrent map" | head -3 > "$dir/crash-signature.txt" || true
+  if (( restarts_t1 > 0 )); then
+    capture_crash_evidence "$dir"
     echo "  crash reason: $(tr '\n' ' ' < "$dir/crash-reason.txt" 2>/dev/null)"
     [[ -s "$dir/crash-signature.txt" ]] && sed 's/^/  /' "$dir/crash-signature.txt"
   fi
@@ -660,6 +684,14 @@ run_cell() {
   echo
   echo "==================== cell $cell ===================="
 
+  # Sampled before anything this cell does — including the discarded warm-up,
+  # which runs the same shape against the same registry condition — so a
+  # restart caused by an earlier cell or the pre-cell serving burst is never
+  # credited to this one.
+  local cell_t0_epoch restarts_t0
+  cell_t0_epoch=$(date +%s)
+  restarts_t0=$(get_restart_count)
+
   registry_ctl delay "$delay" >/dev/null
 
   # Discarded warm-up, before anything is measured. Changing the delay restarts
@@ -699,7 +731,7 @@ run_cell() {
   kill "$SPID" 2>/dev/null || true
   local window=$(( t1 - t0 )); (( window < 30 )) && window=30
 
-  assert_cell_valid "$dir" "$images"
+  assert_cell_valid "$dir" "$images" "$restarts_t0" "$cell_t0_epoch"
 
   ( cd "$dir" && KYVERNO_PODS_RANGE="$window" KYVERNO_PODS_STEP=5 \
       bash "$RES_REPORT" "$PROM_LOCAL" ) >/dev/null 2>&1 || echo "WARN: resource report failed"
@@ -730,7 +762,10 @@ run_cell() {
     echo "window_sec=$window"
     echo "kyverno_admission_review_duration_avg_sec=${adm_avg:-}"
     echo "kyverno_admission_review_duration_p99_sec=${adm_p99:-}"
-    echo "pod_restarts=$(kubectl -n kyverno get pods -l app.kubernetes.io/component=admission-controller -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{" "}{end}' 2>/dev/null)"
+    # Delta since this cell's t0 (restarts.txt), not a fresh cumulative snapshot —
+    # a cumulative count here would carry every earlier cell's crash forever.
+    echo "pod_restarts=$(cat "$dir/restarts.txt" 2>/dev/null || echo "")"
+    echo "pod_restarts_cumulative=$(cat "$dir/restarts-cumulative.txt" 2>/dev/null || echo "")"
     echo "ivpol_present=$(kubectl get ivpol --no-headers 2>/dev/null | wc -l | tr -d ' ')"
     shasum -a 256 "$POLICY_TEMPLATE"
   } > "$dir/meta.txt"

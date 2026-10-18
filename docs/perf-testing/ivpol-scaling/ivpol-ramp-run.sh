@@ -64,7 +64,6 @@ for r in $(seq 1 "$ROUNDS"); do
 
   saturated=""
   crashed=""
-  prev_restarts=0
   first=1
   for vus in $STEPS; do
     echo "  [step] ${vus} VUs" | tee -a "$LOG"
@@ -86,6 +85,9 @@ for r in $(seq 1 "$ROUNDS"); do
       bash "$HERE/ivpol-run.sh" >>"$LOG" 2>&1
 
     # The cell archives its own failure rate and restart count; read both back.
+    # restarts.txt is this step's own delta since its t0 (ivpol-run.sh samples
+    # it per cell now), so no cross-step bookkeeping is needed here any more —
+    # a nonzero value already means this step, not an earlier one, crashed it.
     rate_file=$(find "$step_dir" -name admission-failed-rate.txt | head -1)
     rate=$(cat "$rate_file" 2>/dev/null || echo "-1")
     iters=$(cat "$(find "$step_dir" -name iterations.txt | head -1)" 2>/dev/null || echo 0)
@@ -100,8 +102,8 @@ for r in $(seq 1 "$ROUNDS"); do
     # A crash and a saturation both show up as a wall of failed requests, and
     # they mean opposite things: one is a bug, the other is a capacity limit.
     # Restarts tell them apart, so check that first and name it in the result.
-    if (( restarts > prev_restarts )); then
-      echo "  [CRASHED] admission controller restarted at ${vus} VUs (restarts ${prev_restarts} -> ${restarts})" | tee -a "$LOG"
+    if (( restarts > 0 )); then
+      echo "  [CRASHED] admission controller restarted at ${vus} VUs (restarts this step: ${restarts})" | tee -a "$LOG"
       echo "            this is a crash, not saturation — see the pod's previous logs" | tee -a "$LOG"
       kubectl -n kyverno logs deploy/kyverno-admission-controller --previous --tail=40 2>/dev/null \
         | sed 's/\x1b\[[0-9;]*m//g' | grep -iE "fatal error|panic|concurrent map" | head -3 \
@@ -111,7 +113,6 @@ for r in $(seq 1 "$ROUNDS"); do
       crashed="$vus"
       break
     fi
-    prev_restarts="$restarts"
 
     if [[ "$rate" != "-1" ]] && python3 -c "import sys; sys.exit(0 if float('$rate') > float('$FAIL_THRESHOLD') else 1)"; then
       echo "  [saturated] failure rate $rate exceeds $FAIL_THRESHOLD at ${vus} VUs — stopping" | tee -a "$LOG"
