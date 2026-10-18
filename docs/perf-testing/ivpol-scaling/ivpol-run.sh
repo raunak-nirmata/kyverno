@@ -513,11 +513,28 @@ run_cell() {
       kubectl top pod -n kyverno --no-headers 2>/dev/null | awk -v ts="$ts" '{print ts","$1","$2","$3}' >> "$topcsv"
       sleep 2; done ) & local SPID=$!
 
+  # Cap the arrival rate so the cell stays inside the connection budget.
+  #
+  # Lowering VUs does not do this. At 0ms injected delay a request finishes in
+  # tens of milliseconds, so even two VUs sustain hundreds of requests/s, and
+  # since Kyverno opens ~3.4 connections per image the connection rate climbs
+  # with image count: measured 401/s at one image, 504/s at two, and past the
+  # ceiling by four, where the cell failed 31% of admissions. The ceiling is the
+  # pod's ephemeral range over a 60s TIME_WAIT, about 470/s.
+  #
+  # So the cap is per-cell: target connections/s divided by connections per
+  # request. The injected-latency lanes are naturally slower than this and are
+  # unaffected; it only binds at 0ms, which is exactly where it is needed.
+  local conns_per_req rps
+  conns_per_req=$(python3 -c "print(max(1.0, 3.4 * $images))")
+  rps=$(python3 -c "print(max(1, int(${MAX_CONN_RATE:-350} / $conns_per_req)))")
+  echo "arrival cap: ${rps} req/s (~$(python3 -c "print(int($rps * $conns_per_req))")/s connections, budget ${MAX_CONN_RATE:-350})"
+
   local load_flags
   if [[ "$LOAD" =~ ^[0-9]+s$ ]]; then
-    load_flags=(--vus "$VUS" --duration "$LOAD")
+    load_flags=(--vus "$VUS" --duration "$LOAD" --rps "$rps")
   else
-    load_flags=(--vus "$VUS" --iterations "$LOAD")
+    load_flags=(--vus "$VUS" --iterations "$LOAD" --rps "$rps")
   fi
   local t0 t1
   t0=$(date +%s)
