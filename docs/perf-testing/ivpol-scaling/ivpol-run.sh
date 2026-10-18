@@ -220,6 +220,18 @@ PY2
 )"
   echo "iterations=$iters admission_failed_rate=$failed"
   echo "$iters" > "$dir/iterations.txt"
+  echo "$failed" > "$dir/admission-failed-rate.txt"
+
+  # Record the restart count here, before any gate below can exit. A cell that
+  # fails its gate is precisely the cell where "did the engine crash or did it
+  # merely saturate" matters, and writing this only on the success path meant
+  # the answer was missing exactly when it was needed.
+  local restarts
+  restarts=$(kubectl -n kyverno get pods -l app.kubernetes.io/component=admission-controller \
+    -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{"\n"}{end}' 2>/dev/null \
+    | awk '{s+=$1} END {print s+0}')
+  echo "$restarts" > "$dir/restarts.txt"
+  echo "admission controller restarts so far: $restarts"
   if (( iters < 1 )); then
     echo "FATAL: the cell completed no iterations — nothing was measured."
     exit 1
@@ -278,18 +290,6 @@ except Exception: print(0)' 2>/dev/null)
     echo "WARN: manifest fetches well below one-per-image-per-request; the N axis may be compressed"
   fi
   echo "$pct" > "$dir/manifest-coverage-pct.txt"
-  echo "$failed" > "$dir/admission-failed-rate.txt"
-
-  # (d) Did the admission controller stay up? A crash and a saturation look
-  #     identical from the client - both are a wall of failed requests - but
-  #     they are completely different findings. Record the restart count so the
-  #     caller can tell them apart instead of guessing.
-  local restarts
-  restarts=$(kubectl -n kyverno get pods -l app.kubernetes.io/component=admission-controller \
-    -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{"\n"}{end}' 2>/dev/null \
-    | awk '{s+=$1} END {print s+0}')
-  echo "$restarts" > "$dir/restarts.txt"
-  echo "admission controller restarts so far: $restarts"
 }
 
 # ---------------------------------------------------------------- install
@@ -420,6 +420,19 @@ run_cell() {
   echo "==================== cell $cell ===================="
 
   registry_ctl delay "$delay" >/dev/null
+
+  # Discarded warm-up, before anything is measured. Changing the delay restarts
+  # the proxy pod, which kills the keep-alive connections Kyverno holds to the
+  # old pod's IP; requests issued into that window fail while they are
+  # re-established. Measured straight after a restart, the first cell of a slot
+  # showed 0.15% failures on one version and 93% on another - the same artifact,
+  # differing only by timing, and the second one aborted a six-slot run.
+  # A short burst absorbs it, and its results are thrown away.
+  echo "warm-up (discarded): ${WARMUP:-10s}"
+  IMAGES_PER_POD="$images" REGISTRY_HOST="$REGISTRY_HOST" REPO="$REPO" TEST_NAMESPACE="$TEST_NS" \
+    "$K6" run "$SCRIPT_JS" --vus "$VUS" --duration "${WARMUP:-10s}" --quiet >/dev/null 2>&1 || true
+  kubectl delete pods -n "$TEST_NS" --all --ignore-not-found --wait=false >/dev/null 2>&1 || true
+
   warm_cache "$images"
   [[ "$CACHE_MODE" == "postedit" ]] && touch_policy
   registry_ctl reset >/dev/null
