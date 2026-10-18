@@ -334,6 +334,29 @@ except Exception: print(0)' 2>/dev/null)
 
 # ---------------------------------------------------------------- install
 
+assert_cache_mode() {
+  # Prove the cache flag reached the container, rather than trusting that
+  # passing it meant anything.
+  #
+  # The Kyverno chart renders extraArgs with a truthiness test, so an entry
+  # whose value is boolean false is dropped entirely and the flag silently falls
+  # back to its default - which for imageVerifyCacheEnabled is true. Every cell
+  # labelled "cache off" was therefore running with the cache on, and nothing
+  # said so. --set-string keeps the value a string so it renders; this check is
+  # what makes the next such slip impossible to miss.
+  local want="$1"
+  local args
+  args=$(kubectl -n kyverno get deploy kyverno-admission-controller \
+    -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null)
+  if [[ "$args" != *"--imageVerifyCacheEnabled=$want"* ]]; then
+    echo "FATAL: cache mode not applied. Expected --imageVerifyCacheEnabled=$want"
+    echo "       in the running container's args, and it is not there."
+    echo "       CACHE_MODE=$CACHE_MODE would be a label on a cell that does not match it."
+    exit 1
+  fi
+  echo "cache flag verified: --imageVerifyCacheEnabled=$want"
+}
+
 assert_running_image() {
   # Prove the pod is running the version this slot claims. The chart's
   # appVersion is not trustworthy for a release candidate - at v1.19.2-rc.1 it
@@ -399,10 +422,11 @@ setup_kyverno() {
     -n kyverno --create-namespace \
     -f "$VALUES" \
     ${image_args[@]+"${image_args[@]}"} \
-    --set "admissionController.container.extraArgs.imageVerifyCacheEnabled=$cache_enabled" \
+    --set-string "admissionController.container.extraArgs.imageVerifyCacheEnabled=$cache_enabled" \
     --wait --timeout 10m >/dev/null
   kubectl -n kyverno rollout status deploy/kyverno-admission-controller --timeout=300s
   assert_running_image
+  assert_cache_mode "$cache_enabled"
   kubectl create ns "$TEST_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   apply_policy
   verify_ivpol_active
