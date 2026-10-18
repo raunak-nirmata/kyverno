@@ -47,13 +47,20 @@ count alone.
 
 This harness's TLS-terminating registry changes that timing: pooled TLS
 connections spread the two goroutines' completions wider than a plaintext
-rig does, which can stop the detector firing (see `decision-log.md`, tester
-challenge of 2026-10-18). The crash is therefore reproduced on a separate,
-pinned commit rather than the current (TLS) rig — see
-`results/crash-boundary/SOURCE.md` for the exact commit and command. Do not
-expect this crash on the current rig; it is not one of this rig's validity
-gates, and the rig deliberately has no plaintext or non-pooled mode to force
-it back.
+rig does, which narrows the window the detector needs. Confirmed empirically:
+at the plaintext rig's original shape (2 images, +100 ms, 1 VU) the crash did
+not reproduce on the TLS rig (0 restarts, 0% failures). A single follow-up
+probe at a shape that maximizes simultaneous map writes (8 images, 0 ms
+delay — more concurrent goroutines per request, no added spread from
+injected latency) **did** reproduce it: 2 restarts, 72.4% admission failures,
+`fatal error: concurrent map writes` in the container logs. So the race is
+still live on the TLS rig; the window is merely narrower than on a plaintext
+rig, not closed. The reliable, cheap reproduction nonetheless lives on a
+separate, pinned commit rather than the current (TLS) rig — see
+`results/crash-boundary/SOURCE.md` for the exact commit and command. Don't
+expect the crash at every shape on the current rig; it is not one of this
+rig's validity gates, and the rig deliberately has no plaintext or
+non-pooled mode to force it back.
 
 ## What a run measures
 
