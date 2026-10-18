@@ -282,7 +282,12 @@ echo "==> proving the registry is reachable over TLS, and only over TLS"
 REGISTRY_FQDN="registry.${NS}.svc.cluster.local"
 # Runs from inside the proxy pod: proves DNS, the CA chain, the SAN, and
 # forwarding to the backend all in one place, with the python already there.
-if ! kubectl -n "$NS" exec deploy/registry-proxy -- python3 -c "
+# Retried briefly: "rollout status" returning success does not guarantee the
+# Service's Endpoints have converged on the new pod yet, and a probe that
+# lands on a terminating old pod mid-rollout isn't testing anything real.
+tls_probe_ok=0
+for _ in $(seq 1 10); do
+  if kubectl -n "$NS" exec deploy/registry-proxy -- python3 -c "
 import socket, ssl, sys
 host = '$REGISTRY_FQDN'
 ctx = ssl.create_default_context(cafile='/tls/ca.crt')
@@ -293,6 +298,12 @@ with socket.create_connection((host, 5000), timeout=10) as sock:
         if not resp.startswith(b'HTTP/1.1'):
             sys.exit('no HTTP status line over TLS: ' + repr(resp[:80]))
 " > /tmp/registry-tls-probe.out 2>&1; then
+    tls_probe_ok=1
+    break
+  fi
+  sleep 2
+done
+if [[ "$tls_probe_ok" != "1" ]]; then
   echo "FATAL: TLS probe against $REGISTRY_FQDN:5000 failed — CA, SAN, hostname, or"
   echo "       forwarding is wrong, and Kyverno's own dial would fail the same way."
   sed 's/^/  tlsprobe: /' /tmp/registry-tls-probe.out
