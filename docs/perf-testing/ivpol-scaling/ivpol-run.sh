@@ -625,15 +625,19 @@ setup_kyverno() {
   kubectl delete ns kyverno --ignore-not-found --wait=true >/dev/null 2>&1 || true
 
   # Cache mode is an install-time property because it is a controller flag.
-  # "off" is the headline sweep's state: it removes the cache as a variable so
-  # the images-per-pod curve is about the fetch pattern alone.
-  if [[ "$CACHE_MODE" != "off" ]]; then
-    echo "FATAL: CACHE_MODE=$CACHE_MODE, but the ivpol path disables the verification"
-    echo "       cache in code (evaluator/eval.go:46). A warm or post-edit cell would"
-    echo "       be labelled as something the engine cannot do."
-    exit 1
-  fi
-  local cache_enabled=false
+  # "off" removes the cache as a variable so the images-per-pod curve is about
+  # the fetch pattern alone; it is not the shipped default, which is on.
+  #
+  # The admission path honours --imageVerifyCacheEnabled (ivpol engine.go:513,
+  # fed from main.go's ImageVerifyCacheClient). Only the CLI dry-run and the
+  # MutateDigest paths hardcode the cache off, and neither is measured here.
+  local cache_enabled
+  case "$CACHE_MODE" in
+    off)            cache_enabled=false ;;
+    warm|postedit)  cache_enabled=true  ;;
+    *)              echo "FATAL: CACHE_MODE=$CACHE_MODE is not one of off, warm, postedit."
+                    exit 1 ;;
+  esac
 
   local chart_args=()
   if [[ -n "$KYVERNO_CHART_PATH" ]]; then
