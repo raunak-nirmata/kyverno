@@ -192,6 +192,46 @@ verify_ivpol_active() {
   echo "positive control OK: signed image admitted"
 }
 
+wait_until_serving() {
+  # The controls above prove the policy is wired up, but they are single
+  # requests. A freshly installed controller can satisfy them and still fail
+  # most of a concurrent workload for minutes afterwards - observed on
+  # 1.19.2-rc.1, which failed 94% of a 60s cell and then ran clean with zero
+  # errors when the same load was repeated eleven minutes later. A fixed sleep
+  # is a guess at a number that varies by version and by host; this measures the
+  # thing it is waiting for.
+  #
+  # Runs short bursts, discards them, and proceeds once one comes back below the
+  # failure threshold. Everything here is thrown away - it exists to find the
+  # point where measurement can begin, not to measure.
+  local images="$1"
+  local budget="${SERVING_BUDGET:-12}"
+  local attempt rate
+  for attempt in $(seq 1 "$budget"); do
+    IMAGES_PER_POD="$images" REGISTRY_HOST="$REGISTRY_HOST" REPO="$REPO" TEST_NAMESPACE="$TEST_NS" \
+      "$K6" run "$SCRIPT_JS" --vus "$VUS" --duration 10s --quiet \
+      --summary-export /tmp/ivpol-serving.json >/dev/null 2>&1 || true
+    rate=$(python3 -c '
+import json
+try:
+    m = json.load(open("/tmp/ivpol-serving.json"))["metrics"].get("admission_failed", {})
+    print(m.get("value", m.get("rate", 1)))
+except Exception:
+    print(1)' 2>/dev/null)
+    kubectl delete pods -n "$TEST_NS" --all --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    if python3 -c "import sys; sys.exit(0 if float('$rate') <= 0.01 else 1)" 2>/dev/null; then
+      echo "serving check passed after ${attempt} burst(s) (failure rate $rate)"
+      return 0
+    fi
+    echo "  not serving yet (attempt $attempt/$budget, failure rate $rate) — waiting"
+    sleep 15
+  done
+  echo "FATAL: still failing after $budget bursts; the controller never reached a"
+  echo "       state where it could serve the workload. Measuring now would record"
+  echo "       the failure path, not verification."
+  exit 1
+}
+
 assert_cell_valid() {
   # $1 = cell dir, $2 = images per pod
   #
@@ -366,6 +406,8 @@ setup_kyverno() {
   kubectl create ns "$TEST_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   apply_policy
   verify_ivpol_active
+  # Cheapest shape, just to find the point where it is serving at all.
+  wait_until_serving "$(echo $IMAGES | awk '{print $NF}')"
 }
 
 warm_cache() {
