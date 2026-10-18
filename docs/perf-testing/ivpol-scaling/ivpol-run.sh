@@ -629,7 +629,7 @@ setup_kyverno() {
   apply_policy
   verify_ivpol_active
   # Cheapest shape, just to find the point where it is serving at all.
-  wait_until_serving "$(echo $IMAGES | awk '{print $NF}')"
+  wait_until_serving "$(echo $IMAGES | awk '{print $1}')"
 }
 
 
