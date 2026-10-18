@@ -35,6 +35,26 @@ quantified. Quantifying it is the point of the headline chart.
 It lands in **v1.19.1** and not **v1.19.0**, with nothing else relevant to the
 image path between them, which makes that pair a clean A/B.
 
+### The 1.19.0 crash (chart 1)
+
+Before #17313, `AddImages`'s unsynchronized map writes (SDK
+`imagedataloader/context.go:43-66`) can trip the Go runtime's
+`fatal error: concurrent map writes` detector. This is a genuine,
+unconditional data race on any code path with two or more images per Pod, but
+the detector only fires when two writes land in the same scheduler tick, so
+whether a given run observes it depends on network timing, not on the image
+count alone.
+
+This harness's TLS-terminating registry changes that timing: pooled TLS
+connections spread the two goroutines' completions wider than a plaintext
+rig does, which can stop the detector firing (see `decision-log.md`, tester
+challenge of 2026-10-18). The crash is therefore reproduced on a separate,
+pinned commit rather than the current (TLS) rig — see
+`results/crash-boundary/SOURCE.md` for the exact commit and command. Do not
+expect this crash on the current rig; it is not one of this rig's validity
+gates, and the rig deliberately has no plaintext or non-pooled mode to force
+it back.
+
 ## What a run measures
 
 | Sweep | Cells | The claim it supports |
