@@ -289,6 +289,20 @@ PY2
     exit 1
   fi
 
+  # (c) Verification really reached the registry. Captured before the gates
+  #     below can exit, for the same reason as the restart count: a cell that
+  #     fails is the one whose connection counters explain why.
+  local stats manifests total
+  stats="$(registry_ctl stats 2>/dev/null | tail -1)"
+  echo "$stats" > "$dir/registry-stats.json"
+  manifests=$(printf '%s' "$stats" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("manifest",0))
+except Exception: print(0)' 2>/dev/null)
+  total=$(printf '%s' "$stats" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("total",0))
+except Exception: print(0)' 2>/dev/null)
+  echo "registry requests: total=$total manifests=$manifests"
+
   # (b) Admission mostly succeeded. A failed request still completes an
   #     iteration, and the failure path is usually *faster* than verification,
   #     so a saturated or broken cell reports a better latency than a healthy
@@ -303,17 +317,6 @@ PY2
     }
   fi
 
-  # (c) Verification really reached the registry.
-  local stats manifests total
-  stats="$(registry_ctl stats 2>/dev/null | tail -1)"
-  echo "$stats" > "$dir/registry-stats.json"
-  manifests=$(printf '%s' "$stats" | python3 -c 'import json,sys
-try: print(json.load(sys.stdin).get("manifest",0))
-except Exception: print(0)' 2>/dev/null)
-  total=$(printf '%s' "$stats" | python3 -c 'import json,sys
-try: print(json.load(sys.stdin).get("total",0))
-except Exception: print(0)' 2>/dev/null)
-  echo "registry requests: total=$total manifests=$manifests"
 
   # Hard floor: at least one manifest fetch per admission request. Below this,
   # verification short-circuited for most requests. The prefetch runs per
