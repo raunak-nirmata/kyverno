@@ -504,6 +504,36 @@ assert_running_image() {
   echo "$running" > "$RESULTS_DIR/running-image.txt"
 }
 
+apply_kyverno_crds() {
+  # Rendered out-of-band and applied directly, not tracked by the Helm release
+  # (see setup_kyverno: crds.install=false). --server-side avoids the
+  # last-applied-configuration annotation client-side apply would add, which
+  # would double some of these CRDs (clusterpolicies/policies render past
+  # 1.4MB each) past etcd's request size limit.
+  local tmp
+  tmp="$(mktemp)"
+  helm template kyverno "$@" -n kyverno -f "$VALUES" \
+    > "$tmp.full" 2>"$tmp.err" \
+    || { echo "FATAL: helm template failed while extracting CRDs for apply."
+         sed 's/^/  helm: /' "$tmp.err"; exit 1; }
+  python3 -c '
+import re, sys
+docs = open(sys.argv[1]).read().split("\n---\n")
+crds = [d for d in docs if re.search(r"^kind:\s*CustomResourceDefinition", d, re.M)]
+sys.stdout.write("\n---\n".join(crds))
+' "$tmp.full" > "$tmp.crds"
+  local count
+  count=$(grep -c '^kind: CustomResourceDefinition' "$tmp.crds" || true)
+  if [[ "$count" -lt 1 ]]; then
+    echo "FATAL: extracted zero CRDs from the chart's rendered manifest."
+    echo "       The chart's CRD layout may have changed; this needs a look, not a retry."
+    exit 1
+  fi
+  echo "applying $count CRDs out-of-band (kept out of the Helm release record)"
+  kubectl apply --server-side --force-conflicts -f "$tmp.crds" >/dev/null
+  rm -f "$tmp" "$tmp.full" "$tmp.err" "$tmp.crds"
+}
+
 setup_kyverno() {
   # Before the SKIP_INSTALL return: the ramp reuses one install across steps, and
   # each step still needs Prometheus reachable to fill its resource columns.
@@ -548,6 +578,14 @@ setup_kyverno() {
     echo "  image registry override: $KYVERNO_IMAGE_REGISTRY"
   fi
 
+  apply_kyverno_crds "${chart_args[@]}"
+
+  # crds.install=false here, CRDs applied separately above: the CRD templates
+  # alone render past 5MB for this chart, and with the CA bundle on top of that
+  # in the tracked release, the gzipped, base64'd release Secret clears the
+  # Kubernetes 1MiB object limit. The CRDs are identical either way; only
+  # whether Helm tracks them in its release record changes.
+  #
   # ${arr[@]+"${arr[@]}"} rather than "${arr[@]}": macOS ships bash 3.2, where
   # expanding an empty array under `set -u` is an unbound-variable error. The
   # override arrays are empty on the normal published-chart path, which is the
@@ -558,6 +596,7 @@ setup_kyverno() {
     ${image_args[@]+"${image_args[@]}"} \
     --set-string "admissionController.container.extraArgs.imageVerifyCacheEnabled=$cache_enabled" \
     --set-file "admissionController.caCertificates.data=$KEY_DIR/ca-bundle.pem" \
+    --set crds.install=false \
     --wait --timeout 10m >/dev/null
   kubectl -n kyverno rollout status deploy/kyverno-admission-controller --timeout=300s
   assert_running_image
