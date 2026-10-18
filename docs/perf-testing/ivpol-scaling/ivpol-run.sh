@@ -191,13 +191,14 @@ get_restart_count() {
 
 capture_crash_evidence() {
   # $1 = destination dir. Writes the previous container's log, its termination
-  # reason/exit code, and a grepped signature.
+  # reason/exit code/finishedAt, and a grepped signature. Caller decides
+  # whether it belongs to a cell or predates one.
   local outdir="$1"
   mkdir -p "$outdir" 2>/dev/null || true
   kubectl -n kyverno logs deploy/kyverno-admission-controller --previous --tail=200 \
     > "$outdir/crash-previous.log" 2>&1 || true
   kubectl -n kyverno get pods -l app.kubernetes.io/component=admission-controller \
-    -o jsonpath='{range .items[*]}{.status.containerStatuses[0].lastState.terminated.reason}{" exit="}{.status.containerStatuses[0].lastState.terminated.exitCode}{"\n"}{end}' \
+    -o jsonpath='{range .items[*]}{.status.containerStatuses[0].lastState.terminated.reason}{" exit="}{.status.containerStatuses[0].lastState.terminated.exitCode}{" finishedAt="}{.status.containerStatuses[0].lastState.terminated.finishedAt}{"\n"}{end}' \
     > "$outdir/crash-reason.txt" 2>&1 || true
   sed 's/\x1b\[[0-9;]*m//g' "$outdir/crash-previous.log" 2>/dev/null \
     | grep -iE "fatal error|panic:|concurrent map" | head -3 > "$outdir/crash-signature.txt" || true
@@ -341,10 +342,32 @@ PY2
   echo "admission controller restarts: cumulative=$restarts_t1 this-cell-delta=$restarts_delta"
   # A restart count without a cause cannot tell a data race from an OOM kill,
   # and the cluster is deleted at the end of the slot, so capture it now.
+  # Captured whenever the cumulative count is nonzero, even if the delta is
+  # zero, because lastState still carries the most recent termination; the
+  # finishedAt check below decides whether it belongs to this cell.
   if (( restarts_t1 > 0 )); then
     capture_crash_evidence "$dir"
-    echo "  crash reason: $(tr '\n' ' ' < "$dir/crash-reason.txt" 2>/dev/null)"
-    [[ -s "$dir/crash-signature.txt" ]] && sed 's/^/  /' "$dir/crash-signature.txt"
+    local finished_at finished_epoch
+    finished_at=$(grep -o 'finishedAt=[^ ]*' "$dir/crash-reason.txt" 2>/dev/null | head -1 | cut -d= -f2)
+    finished_epoch=$(python3 -c '
+import calendar, sys
+from datetime import datetime
+try:
+    print(calendar.timegm(datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ").timetuple()))
+except Exception:
+    print(0)
+' "$finished_at" 2>/dev/null)
+    finished_epoch="${finished_epoch:-0}"
+    if [[ -n "$finished_at" ]] && (( finished_epoch > 0 )) && (( finished_epoch < cell_t0_epoch )); then
+      echo "  crash predates this cell (finishedAt=$finished_at, cell started $(( cell_t0_epoch - finished_epoch ))s later) — labeling evidence predates-cell, not attributing it here"
+      for f in crash-previous.log crash-reason.txt crash-signature.txt; do
+        [[ -f "$dir/$f" ]] && mv "$dir/$f" "$dir/predates-cell.$f"
+      done
+    fi
+    echo "  crash reason: $(tr '\n' ' ' < "$dir/crash-reason.txt" 2>/dev/null || tr '\n' ' ' < "$dir/predates-cell.crash-reason.txt" 2>/dev/null)"
+    local sig_file="$dir/crash-signature.txt"
+    [[ -f "$dir/predates-cell.crash-signature.txt" ]] && sig_file="$dir/predates-cell.crash-signature.txt"
+    [[ -s "$sig_file" ]] && sed 's/^/  /' "$sig_file"
   fi
   if (( iters < 1 )); then
     echo "FATAL: the cell completed no iterations — nothing was measured."
