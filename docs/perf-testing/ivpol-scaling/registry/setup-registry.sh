@@ -52,7 +52,12 @@ PROXY_IMAGE="${PROXY_IMAGE:-python:3.12-alpine}"
 KIND_CLUSTER="${KIND_CLUSTER:-}"
 # A fresh cluster pulling both images can take minutes on a cold cache. The old
 # 180s was tuned against a warm one and timed out a slot that was working.
-ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-420s}"
+# Generous, because the rig images are pulled inside the cluster when the
+# preload below cannot work. On Docker Desktop's containerd image store
+# `kind load` fails with "content digest ... not found" for both
+# docker-image and image-archive, so the in-cluster pull is the normal path
+# here, not the fallback.
+ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-900s}"
 export COSIGN_PASSWORD="${COSIGN_PASSWORD:-}"
 # cosign v2, not v3. v3 writes signatures only in the OCI 1.1 bundle form, and
 # Kyverno decides which form to read by calling cosign.GetBundles, which needs
@@ -128,8 +133,13 @@ if [[ -n "$KIND_CLUSTER" ]] && command -v kind >/dev/null 2>&1 && command -v doc
   echo "==> preloading rig images into kind cluster $KIND_CLUSTER"
   for img in "$REGISTRY_IMAGE" "$PROXY_IMAGE"; do
     docker image inspect "$img" >/dev/null 2>&1 || docker pull -q "$img" >/dev/null 2>&1 || true
-    kind load docker-image "$img" --name "$KIND_CLUSTER" >/dev/null 2>&1 \
-      && echo "  loaded $img" || echo "  could not preload $img (will pull in cluster)"
+    if out=$(kind load docker-image "$img" --name "$KIND_CLUSTER" 2>&1); then
+      echo "  loaded $img"
+    else
+      # Report the reason rather than swallowing it: a silent "could not
+      # preload" cost a diagnosis cycle when the in-cluster pull then timed out.
+      echo "  could not preload $img (will pull in cluster): $(printf '%s' "$out" | tail -1 | cut -c1-120)"
+    fi
   done
 fi
 
