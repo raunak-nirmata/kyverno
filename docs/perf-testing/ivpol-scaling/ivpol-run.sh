@@ -274,6 +274,13 @@ except Exception:
     echo "WARN: never reached a serving state after $budget bursts (last rate $rate)."
     echo "      ALLOW_FAILURES is set, so this is recorded as a crash marker, not an abort."
     echo "crash-marker" > "${RESULTS_DIR:-/tmp}/never-served.txt" 2>/dev/null || true
+    # This crash happened during the serving probe, before any cell ran, so its
+    # evidence goes in its own subdirectory rather than being left for the
+    # first cell's assert_cell_valid to pick up and misattribute.
+    local precell="${RESULTS_DIR:-/tmp}/pre-cell"
+    mkdir -p "$precell" 2>/dev/null || true
+    get_restart_count > "$precell/restarts.txt" 2>/dev/null || true
+    capture_crash_evidence "$precell"
     return 0
   fi
   echo "FATAL: still failing after $budget bursts; the controller never reached a"
