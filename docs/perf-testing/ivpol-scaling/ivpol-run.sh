@@ -50,7 +50,18 @@ IMAGES="${IMAGES:-1 2 4 8 16}"
 # difference between versions is the fetch pattern rather than anything else:
 # with no latency to serialise, the versions should converge.
 DELAYS="${DELAYS:-0 25 100}"
-CACHE_MODE="${CACHE_MODE:-off}"          # off | warm | postedit
+# The ivpol evaluator constructs its compiler with
+# imageverifycache.DisabledImageVerifyCache() unconditionally
+# (pkg/image/verification/evaluator/eval.go:46, identical at v1.19.0 and
+# v1.19.1), so the verification cache is never consulted on this path and the
+# --imageVerifyCacheEnabled flag changes nothing here. Confirmed from the
+# archived counters: 7251 signature blob fetches for 904 requests x 8 images =
+# 7232, one fetch per image, no hits.
+#
+# The setting is kept only so an existing invocation does not break, and is
+# asserted to be "off" because any other value would imply a measurement the
+# code cannot produce.
+CACHE_MODE="${CACHE_MODE:-off}"
 VUS="${VUS:-20}"
 # Duration, not an iteration count. A fixed count makes cell length depend on how
 # expensive the cell is: 400 iterations at +100ms with 16 images runs ~32s, but
@@ -330,6 +341,26 @@ except Exception: print(0)' 2>/dev/null)
     echo "WARN: manifest fetches well below one-per-image-per-request; the N axis may be compressed"
   fi
   echo "$pct" > "$dir/manifest-coverage-pct.txt"
+
+  # (e) Connection budget. Kyverno opens roughly 3.4 TCP connections per image
+  #     verified - allowInsecureRegistry makes go-containerregistry dial https
+  #     first on every operation, and a failed-TLS connection cannot be pooled.
+  #     A pod's ephemeral range is 32768-60999 and TIME_WAIT is 60s, so about
+  #     470 new connections/s is the ceiling. The archived cells land exactly on
+  #     it: 412/s and 466/s were clean, 547/s failed. Past that the run measures
+  #     the rig's limit, not Kyverno's, so say so rather than publishing it.
+  local conns rate_per_s
+  conns=$(printf '%s' "$stats" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("connections",0))
+except Exception: print(0)' 2>/dev/null)
+  rate_per_s=$(python3 -c "print(int($conns / max(1,$window)))" 2>/dev/null || echo 0)
+  echo "registry connections: $conns over ${window}s = ${rate_per_s}/s" | tee "$dir/connection-rate.txt" >/dev/null
+  echo "registry connections: $conns over ${window}s = ${rate_per_s}/s"
+  if (( rate_per_s > 400 )); then
+    echo "WARN: ${rate_per_s} new connections/s is near the ~470/s ephemeral-port"
+    echo "      ceiling for the Kyverno pod. Lower VUS; above it, failures are the"
+    echo "      benchmark running out of source ports, not Kyverno failing."
+  fi
 }
 
 # ---------------------------------------------------------------- install
@@ -387,8 +418,13 @@ setup_kyverno() {
   # Cache mode is an install-time property because it is a controller flag.
   # "off" is the headline sweep's state: it removes the cache as a variable so
   # the images-per-pod curve is about the fetch pattern alone.
-  local cache_enabled=true
-  [[ "$CACHE_MODE" == "off" ]] && cache_enabled=false
+  if [[ "$CACHE_MODE" != "off" ]]; then
+    echo "FATAL: CACHE_MODE=$CACHE_MODE, but the ivpol path disables the verification"
+    echo "       cache in code (evaluator/eval.go:46). A warm or post-edit cell would"
+    echo "       be labelled as something the engine cannot do."
+    exit 1
+  fi
+  local cache_enabled=false
 
   local chart_args=()
   if [[ -n "$KYVERNO_CHART_PATH" ]]; then
@@ -434,36 +470,6 @@ setup_kyverno() {
   wait_until_serving "$(echo $IMAGES | awk '{print $NF}')"
 }
 
-warm_cache() {
-  # Only meaningful when the cache is on. Drives a short burst so the images
-  # this cell uses are already verified, then proves the cache is actually
-  # being hit by checking that a second burst costs fewer registry blob fetches
-  # than the first. Manifest fetches do not drop - the prefetch is before the
-  # cache - so blobs are the signal.
-  [[ "$CACHE_MODE" == "off" ]] && return
-  local images="$1"
-  echo "warming cache for $images image(s)"
-  registry_ctl reset >/dev/null
-  IMAGES_PER_POD="$images" REGISTRY_HOST="$REGISTRY_HOST" REPO="$REPO" TEST_NAMESPACE="$TEST_NS" \
-    "$K6" run "$SCRIPT_JS" --vus 5 --iterations 25 --quiet >/dev/null 2>&1 || true
-  local first second
-  first=$(registry_ctl stats 2>/dev/null | tail -1 | python3 -c 'import json,sys
-try: print(json.load(sys.stdin).get("blob",0))
-except Exception: print(0)')
-  registry_ctl reset >/dev/null
-  IMAGES_PER_POD="$images" REGISTRY_HOST="$REGISTRY_HOST" REPO="$REPO" TEST_NAMESPACE="$TEST_NS" \
-    "$K6" run "$SCRIPT_JS" --vus 5 --iterations 25 --quiet >/dev/null 2>&1 || true
-  second=$(registry_ctl stats 2>/dev/null | tail -1 | python3 -c 'import json,sys
-try: print(json.load(sys.stdin).get("blob",0))
-except Exception: print(0)')
-  echo "warm proof: signature blob fetches ${first} -> ${second}"
-  if (( second >= first )) && (( first > 0 )); then
-    echo "FATAL: blob fetches did not fall after warming — the cache is not being hit."
-    echo "       A 'warm' cell that is actually cold would misattribute the cache's effect."
-    exit 1
-  fi
-  kubectl delete pods -n "$TEST_NS" --all --ignore-not-found --wait=false >/dev/null 2>&1 || true
-}
 
 touch_policy() {
   # postedit: bump an annotation so the policy's resourceVersion changes. The
@@ -499,7 +505,6 @@ run_cell() {
     "$K6" run "$SCRIPT_JS" --vus "$VUS" --duration "${WARMUP:-10s}" --quiet >/dev/null 2>&1 || true
   kubectl delete pods -n "$TEST_NS" --all --ignore-not-found --wait=false >/dev/null 2>&1 || true
 
-  warm_cache "$images"
   [[ "$CACHE_MODE" == "postedit" ]] && touch_policy
   registry_ctl reset >/dev/null
 
@@ -530,9 +535,19 @@ run_cell() {
   ( cd "$dir" && KYVERNO_PODS_RANGE="$window" KYVERNO_PODS_STEP=5 \
       bash "$RES_REPORT" "$PROM_LOCAL" ) >/dev/null 2>&1 || echo "WARN: resource report failed"
 
+  # Kyverno's own admission-review duration is the headline, not k6's
+  # iteration_duration. Measured against the archived cells they differ by about
+  # 2x - 148ms vs 340ms at eight images - because an iteration also carries the
+  # apiserver, etcd, and a fresh Kubernetes client built per iteration in the
+  # workload. Both are recorded; only this one answers "what does verification
+  # cost".
+  #
+  # The window is the cell's own duration rather than a fixed [5m], which would
+  # reach back over the warm-up and the serving probe and average them in.
+  local win_range="${window}s"
   local adm_avg adm_p99
-  adm_avg=$(promq 'sum(rate(kyverno_admission_review_duration_seconds_sum[5m]))/sum(rate(kyverno_admission_review_duration_seconds_count[5m]))')
-  adm_p99=$(promq 'histogram_quantile(0.99, sum(rate(kyverno_admission_review_duration_seconds_bucket[5m])) by (le))')
+  adm_avg=$(promq "sum(rate(kyverno_admission_review_duration_seconds_sum[$win_range]))/sum(rate(kyverno_admission_review_duration_seconds_count[$win_range]))")
+  adm_p99=$(promq "histogram_quantile(0.99, sum(rate(kyverno_admission_review_duration_seconds_bucket[$win_range])) by (le))")
 
   {
     echo "cell=$cell"
