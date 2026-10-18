@@ -5,12 +5,13 @@
 # reasoning - and adds what image verification needs. Kept as a separate file
 # rather than a patch so a cell can archive exactly the values it ran with.
 #
-# The two additions that matter:
-#
-#   allowInsecureRegistry  The benchmark registry speaks plain HTTP inside the
-#                          cluster. Without this Kyverno refuses to talk to it
-#                          and every cell measures a policy that fails rather
-#                          than a policy that verifies.
+# The benchmark registry is served over TLS by the delay proxy (see
+# registry/setup-registry.sh); it no longer needs allowInsecureRegistry, and
+# ivpol-run.sh asserts the flag stays absent. The CA that makes the registry
+# trusted is injected here by ivpol-run.sh via --set-file
+# admissionController.caCertificates.data=registry/keys/ca-bundle.pem, which
+# the chart renders as a ConfigMap and mounts over the image's own bundle at
+# /etc/ssl/certs/ca-certificates.crt.
 #
 #   imageVerifyCache*      Exposed so a cell can choose its cache state instead
 #                          of inheriting the default. The defaults are enabled,
@@ -27,8 +28,6 @@ admissionController:
         cpu: 250m
         memory: 256Mi
     extraArgs:
-      # Plain-HTTP benchmark registry. Testing only, which is exactly what this is.
-      allowInsecureRegistry: true
       # Overridden per cell by ivpol-run.sh via --set. Listed here so the
       # defaults are visible in the archived values rather than implicit.
       imageVerifyCacheEnabled: true

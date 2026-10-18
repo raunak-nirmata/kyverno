@@ -72,6 +72,11 @@ VUS="${VUS:-20}"
 # An integer is still accepted and means a fixed iteration count.
 LOAD="${LOAD:-60s}"
 CELL_COOLDOWN="${CELL_COOLDOWN:-60}"
+# Fixed arrival rate, not a cap derived from a connection budget. With pooled
+# TLS connections the port budget no longer binds, so the rate is a
+# measurement choice. Default matches SERVING_RPS and keeps the slowest cell
+# (16 images, +100ms, ~8.6s) at ~90 in flight, under MAX_VUS=200.
+TARGET_RPS="${TARGET_RPS:-10}"
 SKIP_INSTALL="${SKIP_INSTALL:-}"
 RESULTS_DIR="${RESULTS_DIR:-$HERE/results/ivpol}"
 REGISTRY_HOST="${REGISTRY_HOST:-registry.bench-registry.svc.cluster.local:5000}"
@@ -85,6 +90,7 @@ mkdir -p "$RESULTS_DIR"
 
 [[ -x "$K6" ]] || { echo "FATAL: missing k6 build: $K6"; exit 1; }
 [[ -f "$KEY_DIR/cosign.pub" ]] || { echo "FATAL: no public key at $KEY_DIR/cosign.pub — run registry/setup-registry.sh"; exit 1; }
+[[ -f "$KEY_DIR/ca-bundle.pem" ]] || { echo "FATAL: no CA bundle at $KEY_DIR/ca-bundle.pem — run registry/setup-registry.sh"; exit 1; }
 
 helm repo add kyverno https://kyverno.github.io/kyverno/ >/dev/null 2>&1 || true
 helm repo update kyverno >/dev/null 2>&1 || true
@@ -253,26 +259,35 @@ assert_cell_valid() {
 
   # (a) The load actually ran. With duration-based cells the iteration count is
   #     an output, not an input, so it has to be read back rather than assumed.
-  local iters failed
-  read -r iters failed <<<"$(python3 - "$dir/k6-summary.json" <<'PY2'
+  local iters failed dropped
+  read -r iters failed dropped <<<"$(python3 - "$dir/k6-summary.json" <<'PY2'
 import json, sys
 try:
     m = json.load(open(sys.argv[1]))["metrics"]
 except Exception:
-    print("0 0"); raise SystemExit
+    print("0 0 0"); raise SystemExit
 iters = int(m.get("iterations", {}).get("count", 0))
 # k6 reports a Rate metric as {"passes": n, "fails": n, "value": r}, where
 # value is the proportion of true samples - here, the share of admissions that
 # failed. There is no "rate" key; reading one made this gate silently inert.
 failed_metric = m.get("admission_failed", {})
 rate = failed_metric.get("value", failed_metric.get("rate"))
+dropped = int(m.get("dropped_iterations", {}).get("count", 0))
 # A summary with no such metric reports nothing rather than a false zero.
-print(f"{iters} {-1 if rate is None else rate}")
+print(f"{iters} {-1 if rate is None else rate} {dropped}")
 PY2
 )"
-  echo "iterations=$iters admission_failed_rate=$failed"
+  echo "iterations=$iters admission_failed_rate=$failed dropped_iterations=$dropped"
   echo "$iters" > "$dir/iterations.txt"
   echo "$failed" > "$dir/admission-failed-rate.txt"
+  # A fixed TARGET_RPS is now an input, not a derived cap, so VUs running out
+  # before it's satisfied is worth flagging — it means the offered load was
+  # lower than TARGET_RPS asked for. WARN, not FATAL: the admissions that did
+  # happen are still a valid measurement.
+  if (( iters > 0 )) && python3 -c "import sys; sys.exit(0 if $dropped > 0.05 * $iters else 1)" 2>/dev/null; then
+    echo "WARN: $dropped dropped iterations against $iters completed — offered load fell short"
+    echo "      of TARGET_RPS=$TARGET_RPS. Raise PREALLOC_VUS/MAX_VUS if this persists."
+  fi
 
   # Record the restart count here, before any gate below can exit. A cell that
   # fails its gate is precisely the cell where "did the engine crash or did it
@@ -346,24 +361,50 @@ except Exception: print(0)' 2>/dev/null)
   fi
   echo "$pct" > "$dir/manifest-coverage-pct.txt"
 
-  # (e) Connection budget. Kyverno opens roughly 3.4 TCP connections per image
-  #     verified - allowInsecureRegistry makes go-containerregistry dial https
-  #     first on every operation, and a failed-TLS connection cannot be pooled.
-  #     A pod's ephemeral range is 32768-60999 and TIME_WAIT is 60s, so about
-  #     470 new connections/s is the ceiling. The archived cells land exactly on
-  #     it: 412/s and 466/s were clean, 547/s failed. Past that the run measures
-  #     the rig's limit, not Kyverno's, so say so rather than publishing it.
-  local conns rate_per_s
+  # (e) The proxy terminates TLS now, so the two things that used to be a
+  #     connection-count cap become output assertions instead.
+  local tls_failed conns rate_per_s ratio
+  tls_failed=$(printf '%s' "$stats" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("tls_handshake_failed",0))
+except Exception: print(0)' 2>/dev/null)
   conns=$(printf '%s' "$stats" | python3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("connections",0))
 except Exception: print(0)' 2>/dev/null)
   rate_per_s=$(python3 -c "print(int($conns / max(1,$window)))" 2>/dev/null || echo 0)
-  echo "registry connections: $conns over ${window}s = ${rate_per_s}/s" | tee "$dir/connection-rate.txt" >/dev/null
-  echo "registry connections: $conns over ${window}s = ${rate_per_s}/s"
-  if (( rate_per_s > 400 )); then
-    echo "WARN: ${rate_per_s} new connections/s is near the ~470/s ephemeral-port"
-    echo "      ceiling for the Kyverno pod. Lower VUS; above it, failures are the"
-    echo "      benchmark running out of source ports, not Kyverno failing."
+  ratio=$(python3 -c "print(round($conns / max(1,$total), 3))" 2>/dev/null || echo 0)
+  echo "registry connections: $conns, requests: $total, ratio: $ratio (${rate_per_s}/s), tls_handshake_failed=$tls_failed" \
+    | tee "$dir/connection-rate.txt" >/dev/null
+  echo "registry connections: $conns, requests: $total, ratio: $ratio (${rate_per_s}/s), tls_handshake_failed=$tls_failed"
+
+  # Something reached the registry over plain HTTP. With name.Insecure gone and
+  # the proxy TLS-only, this should never happen.
+  if (( tls_failed > 0 )); then
+    if [[ "${ALLOW_FAILURES:-}" == "1" ]]; then
+      echo "WARN: $tls_failed TLS handshake failures — something reached the registry over"
+      echo "      plain HTTP. Expected while the engine is failing; ALLOW_FAILURES is set."
+    else
+      echo "FATAL: $tls_failed TLS handshake failures — something reached the registry over plain HTTP."
+      echo "       Set ALLOW_FAILURES=1 only for the crash-boundary sweep, where the engine"
+      echo "       dying mid-handshake is expected."
+      exit 1
+    fi
+  fi
+
+  # Pooling check. With TLS the port budget no longer binds, so a healthy cell
+  # should hold roughly its peak concurrency in connections (tens) against
+  # thousands of requests; the failed-https churn this replaced measured
+  # 1-2 connections per request.
+  if (( total > 0 )) && (( conns * 4 > total )); then
+    if [[ "${ALLOW_FAILURES:-}" == "1" ]]; then
+      echo "WARN: $conns connections against $total requests exceeds the 1-per-4 budget."
+      echo "      Expected while the engine is failing; ALLOW_FAILURES is set, continuing."
+    else
+      echo "FATAL: $conns connections against $total requests exceeds the 1-per-4 budget."
+      echo "       Connections are not pooling; this would measure the rig, not Kyverno."
+      echo "       A healthy cell that trips this is a finding about Kyverno's pooling,"
+      echo "       not a reason to loosen the gate — escalate rather than widen it."
+      exit 1
+    fi
   fi
 }
 
@@ -390,6 +431,59 @@ assert_cache_mode() {
     exit 1
   fi
   echo "cache flag verified: --imageVerifyCacheEnabled=$want"
+}
+
+assert_registry_trust() {
+  # Prove TLS trust actually landed, rather than trusting that --set-file
+  # meant anything. Three checks, each catching a distinct way this could
+  # silently fail. The end-to-end proof is the positive control below: a
+  # signed image is admitted only if Kyverno completed a verified TLS
+  # handshake and fetched the signature over it.
+  local args
+  args=$(kubectl -n kyverno get deploy kyverno-admission-controller \
+    -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null)
+  if [[ "$args" == *"--allowInsecureRegistry"* ]]; then
+    echo "FATAL: --allowInsecureRegistry is present in the running container's args."
+    echo "       A values file or override re-added it; the run would be back on the"
+    echo "       failed-https dial this change exists to remove."
+    exit 1
+  fi
+
+  local mount_ok
+  mount_ok=$(kubectl -n kyverno get deploy kyverno-admission-controller -o json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    mounts = json.load(sys.stdin)["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
+except Exception:
+    mounts = []
+print("yes" if any(m.get("name") == "ca-certificates"
+                    and m.get("mountPath") == "/etc/ssl/certs/ca-certificates.crt"
+                    for m in mounts) else "no")
+')
+  if [[ "$mount_ok" != "yes" ]]; then
+    echo "FATAL: no ca-certificates volumeMount at /etc/ssl/certs/ca-certificates.crt."
+    echo "       --set-file may have read an empty ca-bundle.pem, which the chart's"
+    echo "       'if .data' silently drops; every verification would then fail with"
+    echo "       x509: certificate signed by unknown authority."
+    exit 1
+  fi
+
+  local cm_data cm_ok
+  cm_data=$(kubectl -n kyverno get configmap kyverno-admission-controller-ca-certificates \
+    -o jsonpath='{.data.ca-certificates}' 2>/dev/null)
+  cm_ok=$(python3 -c '
+import sys
+cm, ca_path = sys.argv[1], sys.argv[2]
+ca = open(ca_path).read().strip()
+print("yes" if ca in cm else "no")
+' "$cm_data" "$KEY_DIR/ca.crt")
+  if [[ "$cm_ok" != "yes" ]]; then
+    echo "FATAL: the ca-certificates ConfigMap does not contain our CA's PEM body."
+    echo "       Kyverno would be trusting a bundle that does not include the registry's CA."
+    exit 1
+  fi
+
+  echo "registry trust verified: no --allowInsecureRegistry, CA mount present, CM carries our CA"
 }
 
 assert_running_image() {
@@ -463,10 +557,12 @@ setup_kyverno() {
     -f "$VALUES" \
     ${image_args[@]+"${image_args[@]}"} \
     --set-string "admissionController.container.extraArgs.imageVerifyCacheEnabled=$cache_enabled" \
+    --set-file "admissionController.caCertificates.data=$KEY_DIR/ca-bundle.pem" \
     --wait --timeout 10m >/dev/null
   kubectl -n kyverno rollout status deploy/kyverno-admission-controller --timeout=300s
   assert_running_image
   assert_cache_mode "$cache_enabled"
+  assert_registry_trust
   kubectl create ns "$TEST_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   apply_policy
   verify_ivpol_active
@@ -492,27 +588,12 @@ run_cell() {
   local images="$1" delay="$2"
   local cell="img${images}-d${delay}-${CACHE_MODE}"
 
-  # Arrival cap for every k6 invocation in this cell, warm-up included.
-  # Computed here rather than beside the measured run because the warm-up uses
-  # it first, and an unset value would abort the cell under set -u.
-  #
-  # Lowering VUs does not control this: at 0ms a request finishes in tens of
-  # milliseconds, so even two VUs sustain hundreds of requests/s, and since
-  # Kyverno opens ~3.4 connections per image the connection rate climbs with
-  # image count - measured 401/s at one image, 504/s at two, and past the
-  # ceiling by four, where the cell failed 31% of admissions. The ceiling is the
-  # pod's ephemeral range over a 60s TIME_WAIT, about 470/s.
-  local conns_per_req rps
-  # Connections per request is a fixed cost plus a per-image one, not purely
-  # per-image. Fitted to two measured cells: 5.26 conn/req at one image
-  # (30568 connections over 5813 requests) and 27.3 at eight (24691 over 904),
-  # giving ~2.1 + 3.15 per image. The earlier per-image-only form came from the
-  # eight-image cell alone, where the fixed part is amortised, and so
-  # underestimated small-image cells by nearly half - which is why a cell capped
-  # at "346/s" actually ran at 509/s and failed.
-  conns_per_req=$(python3 -c "print(max(1.0, 2.1 + 3.15 * $images))")
-  rps=$(python3 -c "print(max(1, int(${MAX_CONN_RATE:-200} / $conns_per_req)))")
-  echo "arrival cap: ${rps} req/s (~$(python3 -c "print(int($rps * $conns_per_req))")/s connections, budget ${MAX_CONN_RATE:-200})"
+  # Fixed arrival rate (TARGET_RPS). With pooled TLS connections the pod's
+  # ephemeral-port budget no longer binds, so there is no connection-cost
+  # formula to fit here; gate (e) below checks the result instead of a cap
+  # trying to prevent it.
+  local rps="$TARGET_RPS"
+  echo "arrival rate: ${rps} req/s"
   local dir="$RESULTS_DIR/$cell"; mkdir -p "$dir"
   echo
   echo "==================== cell $cell ===================="

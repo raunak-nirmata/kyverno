@@ -23,9 +23,8 @@ import { Rate } from 'k6/metrics';
 // --rps throttles k6's own HTTP module; kubernetes.create() comes from
 // xk6-kubernetes and is not counted by it, so --rps silently does nothing here -
 // a cell capped at 102 req/s ran at 134. This executor controls iteration
-// starts directly, which is the quantity that needs limiting: each iteration is
-// one Pod create, and Kyverno opens roughly 3.4 registry connections per image
-// in it. Without a cap the 0ms lane outruns the pod's ephemeral-port budget.
+// starts directly, which is TARGET_RPS: a fixed measurement input, not a cap
+// derived from a connection budget (pooled TLS connections don't need one).
 export const options = __ENV.TARGET_RPS
     ? {
           scenarios: {
