@@ -503,9 +503,16 @@ run_cell() {
   # ceiling by four, where the cell failed 31% of admissions. The ceiling is the
   # pod's ephemeral range over a 60s TIME_WAIT, about 470/s.
   local conns_per_req rps
-  conns_per_req=$(python3 -c "print(max(1.0, 3.4 * $images))")
-  rps=$(python3 -c "print(max(1, int(${MAX_CONN_RATE:-350} / $conns_per_req)))")
-  echo "arrival cap: ${rps} req/s (~$(python3 -c "print(int($rps * $conns_per_req))")/s connections, budget ${MAX_CONN_RATE:-350})"
+  # Connections per request is a fixed cost plus a per-image one, not purely
+  # per-image. Fitted to two measured cells: 5.26 conn/req at one image
+  # (30568 connections over 5813 requests) and 27.3 at eight (24691 over 904),
+  # giving ~2.1 + 3.15 per image. The earlier per-image-only form came from the
+  # eight-image cell alone, where the fixed part is amortised, and so
+  # underestimated small-image cells by nearly half - which is why a cell capped
+  # at "346/s" actually ran at 509/s and failed.
+  conns_per_req=$(python3 -c "print(max(1.0, 2.1 + 3.15 * $images))")
+  rps=$(python3 -c "print(max(1, int(${MAX_CONN_RATE:-200} / $conns_per_req)))")
+  echo "arrival cap: ${rps} req/s (~$(python3 -c "print(int($rps * $conns_per_req))")/s connections, budget ${MAX_CONN_RATE:-200})"
   local dir="$RESULTS_DIR/$cell"; mkdir -p "$dir"
   echo
   echo "==================== cell $cell ===================="
