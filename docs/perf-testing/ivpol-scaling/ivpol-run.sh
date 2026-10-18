@@ -309,6 +309,19 @@ PY2
     | awk '{s+=$1} END {print s+0}')
   echo "$restarts" > "$dir/restarts.txt"
   echo "admission controller restarts so far: $restarts"
+  # A restart count without a cause cannot tell a data race from an OOM kill,
+  # and the cluster is deleted at the end of the slot, so capture it now.
+  if (( restarts > 0 )); then
+    kubectl -n kyverno logs deploy/kyverno-admission-controller --previous --tail=200 \
+      > "$dir/crash-previous.log" 2>&1 || true
+    kubectl -n kyverno get pods -l app.kubernetes.io/component=admission-controller \
+      -o jsonpath='{range .items[*]}{.status.containerStatuses[0].lastState.terminated.reason}{" exit="}{.status.containerStatuses[0].lastState.terminated.exitCode}{"\n"}{end}' \
+      > "$dir/crash-reason.txt" 2>&1 || true
+    sed 's/\x1b\[[0-9;]*m//g' "$dir/crash-previous.log" 2>/dev/null \
+      | grep -iE "fatal error|panic:|concurrent map" | head -3 > "$dir/crash-signature.txt" || true
+    echo "  crash reason: $(tr '\n' ' ' < "$dir/crash-reason.txt" 2>/dev/null)"
+    [[ -s "$dir/crash-signature.txt" ]] && sed 's/^/  /' "$dir/crash-signature.txt"
+  fi
   if (( iters < 1 )); then
     echo "FATAL: the cell completed no iterations — nothing was measured."
     exit 1
