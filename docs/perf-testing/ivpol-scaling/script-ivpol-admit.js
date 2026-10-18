@@ -88,6 +88,15 @@ const podSpec = {
 // concurrency ramp has no stop condition.
 const admissionFailed = new Rate('admission_failed');
 
+// Log the first few distinct failures rather than swallowing them. A silent
+// catch turns every failure into an indistinguishable tick on a rate metric,
+// which meant a 94% failure cell could only be diagnosed by re-running the
+// workload by hand afterwards - by which time the system had recovered and the
+// evidence was gone. k6's console output lands in the cell's k6-output.log, so
+// the cell now carries its own explanation.
+const seen = {};
+let logged = 0;
+
 export default function () {
     const kubernetes = new Kubernetes();
     try {
@@ -95,5 +104,13 @@ export default function () {
         admissionFailed.add(false);
     } catch (e) {
         admissionFailed.add(true);
+        const msg = String(e).slice(0, 300);
+        // One line per distinct message, capped: a failing cell produces
+        // thousands of identical errors and the log is not the place for them.
+        if (!seen[msg] && logged < 5) {
+            seen[msg] = true;
+            logged++;
+            console.error('ADMISSION_FAILURE: ' + msg);
+        }
     }
 }
