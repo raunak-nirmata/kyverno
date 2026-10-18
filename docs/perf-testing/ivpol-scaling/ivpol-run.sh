@@ -371,7 +371,11 @@ except Exception:
         [[ -f "$dir/$f" ]] && mv "$dir/$f" "$dir/predates-cell.$f"
       done
     fi
-    echo "  crash reason: $(tr '\n' ' ' < "$dir/crash-reason.txt" 2>/dev/null || tr '\n' ' ' < "$dir/predates-cell.crash-reason.txt" 2>/dev/null)"
+    # Pick the file before reading it: a failed redirect reports through the
+    # shell, which the command's own 2>/dev/null cannot suppress.
+    local reason_file="$dir/crash-reason.txt"
+    [[ -f "$reason_file" ]] || reason_file="$dir/predates-cell.crash-reason.txt"
+    [[ -f "$reason_file" ]] && echo "  crash reason: $(tr '\n' ' ' < "$reason_file")"
     local sig_file="$dir/crash-signature.txt"
     [[ -f "$dir/predates-cell.crash-signature.txt" ]] && sig_file="$dir/predates-cell.crash-signature.txt"
     [[ -s "$sig_file" ]] && sed 's/^/  /' "$sig_file"
