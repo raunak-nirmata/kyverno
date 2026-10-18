@@ -107,6 +107,7 @@ esac
 
 need kubectl
 need crane
+need openssl
 [[ -x "$COSIGN_BIN" ]] || { echo "missing cosign at $COSIGN_BIN"; echo "  install: go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.3"; exit 1; }
 # Fail now, with an explanation, rather than after signing 16 images that
 # Kyverno will not be able to read.
@@ -126,6 +127,47 @@ kubectl create ns "$NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 echo "==> delay proxy source -> ConfigMap"
 kubectl -n "$NS" create configmap registry-proxy-src \
   --from-file=delay-proxy.py="$HERE/delay-proxy.py" \
+  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+echo "==> TLS CA"
+mkdir -p "$KEY_DIR"
+if [[ ! -f "$KEY_DIR/ca.key" ]]; then
+  openssl ecparam -name prime256v1 -genkey -noout -out "$KEY_DIR/ca.key"
+  openssl req -x509 -new -key "$KEY_DIR/ca.key" -out "$KEY_DIR/ca.crt" \
+    -days 3650 -subj "/CN=ivpol-bench-ca"
+  echo "generated $KEY_DIR/ca.crt"
+else
+  echo "reusing $KEY_DIR/ca.crt"
+fi
+
+echo "==> TLS server certificate for $NS"
+# Regenerated every install: the SAN list depends on $NS, which can change
+# between runs. A temp config file, not -addext, so LibreSSL (macOS default)
+# works even when Homebrew OpenSSL isn't first on PATH.
+SERVER_CNF="$(mktemp)"
+cat > "$SERVER_CNF" <<EOF
+[req]
+distinguished_name = dn
+req_extensions = ext
+[dn]
+[ext]
+subjectAltName = DNS:registry.${NS}.svc.cluster.local,DNS:registry.${NS}.svc,DNS:registry.${NS},DNS:registry,DNS:localhost,IP:127.0.0.1
+EOF
+openssl ecparam -name prime256v1 -genkey -noout -out "$KEY_DIR/server.key"
+openssl req -new -key "$KEY_DIR/server.key" -out "$KEY_DIR/server.csr" \
+  -subj "/CN=registry.${NS}.svc.cluster.local" -config "$SERVER_CNF" -extensions ext
+openssl x509 -req -in "$KEY_DIR/server.csr" -CA "$KEY_DIR/ca.crt" -CAkey "$KEY_DIR/ca.key" \
+  -CAcreateserial -out "$KEY_DIR/server.crt" -days 3650 -extfile "$SERVER_CNF" -extensions ext
+rm -f "$SERVER_CNF" "$KEY_DIR/server.csr" "$KEY_DIR/ca.srl"
+echo "generated $KEY_DIR/server.crt (SANs for namespace $NS)"
+
+echo "==> registry-tls Secret"
+# ca.crt is carried in the Secret too, so assert_registry_tls (in the proxy pod)
+# and the CA-bundle step below can both read it without a separate ConfigMap.
+kubectl -n "$NS" create secret generic registry-tls \
+  --from-file=tls.crt="$KEY_DIR/server.crt" \
+  --from-file=tls.key="$KEY_DIR/server.key" \
+  --from-file=ca.crt="$KEY_DIR/ca.crt" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 # Pull once on the host and side-load, so repeated slots reuse the local copy.
@@ -206,15 +248,21 @@ spec:
             - { name: LISTEN_PORT, value: "5000" }
             - { name: STATS_PORT, value: "5001" }
             - { name: DELAY_MS, value: "$DELAY_MS" }
+            - { name: TLS_CERT, value: /tls/tls.crt }
+            - { name: TLS_KEY, value: /tls/tls.key }
           ports:
             - { containerPort: 5000 }
             - { containerPort: 5001 }
-          volumeMounts: [ { name: src, mountPath: /src } ]
+          volumeMounts:
+            - { name: src, mountPath: /src }
+            - { name: tls, mountPath: /tls, readOnly: true }
           resources:
             requests: { cpu: 100m, memory: 128Mi }
       volumes:
         - name: src
           configMap: { name: registry-proxy-src }
+        - name: tls
+          secret: { secretName: registry-tls }
 ---
 apiVersion: v1
 kind: Service
@@ -223,12 +271,69 @@ metadata:
 spec:
   selector: { app: registry-proxy }
   ports:
-    - { name: http, port: 5000, targetPort: 5000 }
+    - { name: https, port: 5000, targetPort: 5000 }
     - { name: stats, port: 5001, targetPort: 5001 }
 YAML
 
 kubectl -n "$NS" rollout status deploy/registry-backend --timeout="$ROLLOUT_TIMEOUT"
 kubectl -n "$NS" rollout status deploy/registry-proxy --timeout="$ROLLOUT_TIMEOUT"
+
+echo "==> proving the registry is reachable over TLS, and only over TLS"
+REGISTRY_FQDN="registry.${NS}.svc.cluster.local"
+# Runs from inside the proxy pod: proves DNS, the CA chain, the SAN, and
+# forwarding to the backend all in one place, with the python already there.
+if ! kubectl -n "$NS" exec deploy/registry-proxy -- python3 -c "
+import socket, ssl, sys
+host = '$REGISTRY_FQDN'
+ctx = ssl.create_default_context(cafile='/tls/ca.crt')
+with socket.create_connection((host, 5000), timeout=10) as sock:
+    with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+        ssock.sendall(b'GET /v2/ HTTP/1.1\r\nHost: ' + host.encode() + b'\r\n\r\n')
+        resp = ssock.recv(4096)
+        if not resp.startswith(b'HTTP/1.1'):
+            sys.exit('no HTTP status line over TLS: ' + repr(resp[:80]))
+" > /tmp/registry-tls-probe.out 2>&1; then
+  echo "FATAL: TLS probe against $REGISTRY_FQDN:5000 failed — CA, SAN, hostname, or"
+  echo "       forwarding is wrong, and Kyverno's own dial would fail the same way."
+  sed 's/^/  tlsprobe: /' /tmp/registry-tls-probe.out
+  exit 1
+fi
+echo "TLS probe OK: $REGISTRY_FQDN:5000 verified with the private CA"
+
+if kubectl -n "$NS" exec deploy/registry-proxy -- python3 -c "
+import socket, sys
+host = '$REGISTRY_FQDN'
+with socket.create_connection((host, 5000), timeout=10) as sock:
+    sock.settimeout(5)
+    sock.sendall(b'GET /v2/ HTTP/1.1\r\nHost: ' + host.encode() + b'\r\n\r\n')
+    try:
+        data = sock.recv(4096)
+    except (socket.timeout, ConnectionResetError, OSError):
+        data = b''
+    if data.startswith(b'HTTP/1.1'):
+        sys.exit('plaintext GET got an HTTP response: ' + repr(data[:80]))
+" > /tmp/registry-plain-probe.out 2>&1; then
+  echo "plaintext rejected OK: a non-TLS request to $REGISTRY_FQDN:5000 got no HTTP response"
+else
+  echo "FATAL: a plaintext request to $REGISTRY_FQDN:5000 got an HTTP response — the proxy"
+  echo "       is accepting unencrypted traffic, which means removing allowInsecureRegistry"
+  echo "       would not actually stop plaintext use."
+  sed 's/^/  plainprobe: /' /tmp/registry-plain-probe.out
+  exit 1
+fi
+
+echo "==> CA bundle for Kyverno"
+# admissionController.caCertificates.data *replaces* the image's bundle, so
+# passing only our CA would strand the keyless policy and anything reaching a
+# public registry. FATAL rather than a silent CA-only fallback.
+if ! kubectl -n "$NS" exec deploy/registry-proxy -- cat /etc/ssl/certs/ca-certificates.crt \
+    > /tmp/public-ca-bundle.pem 2>/tmp/public-ca-bundle.err; then
+  echo "FATAL: could not read the proxy image's public CA bundle to concatenate with ours."
+  sed 's/^/  cabundle: /' /tmp/public-ca-bundle.err
+  exit 1
+fi
+cat "$KEY_DIR/ca.crt" /tmp/public-ca-bundle.pem > "$KEY_DIR/ca-bundle.pem"
+echo "wrote $KEY_DIR/ca-bundle.pem (our CA + the proxy image's public bundle)"
 
 echo "==> cosign key pair"
 mkdir -p "$KEY_DIR"
@@ -240,7 +345,9 @@ else
 fi
 
 echo "==> port-forward for push (localhost:$PUSH_PORT)"
-kubectl -n "$NS" port-forward svc/registry "$PUSH_PORT:5000" >/tmp/regpush-pf.log 2>&1 &
+# Forwards to the backend, not the proxy: pushes neither need TLS nor should
+# count against the registry-request counters a cell gates on.
+kubectl -n "$NS" port-forward svc/registry-backend "$PUSH_PORT:5000" >/tmp/regpush-pf.log 2>&1 &
 PF=$!
 # Detach from job control so the shell does not print "Terminated" when the trap
 # kills it. That line reads like a failure and would camouflage a real one.
@@ -289,7 +396,10 @@ crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$REPO:unsigned-contr
   || { echo "FATAL: could not push the unsigned control image"; exit 1; }
 echo "  pushed $REPO:unsigned-control (deliberately unsigned)"
 
-echo "==> verifying one image through the same path Kyverno will use"
+echo "==> verifying the signature exists and verifies"
+# Not "the same path Kyverno will use" anymore: this goes straight to the
+# backend, plain HTTP. The TLS path is proven by the probes above, and the
+# end-to-end proof is the positive control in ivpol-run.sh.
 "$COSIGN_BIN" verify --key "$KEY_DIR/cosign.pub" --insecure-ignore-tlog=true \
   --allow-insecure-registry \
   "127.0.0.1:$PUSH_PORT/$REPO:v1" >/dev/null 2>&1 \
@@ -297,6 +407,7 @@ echo "==> verifying one image through the same path Kyverno will use"
 
 echo
 echo "registry ready"
-echo "  in-cluster:  $IN_CLUSTER_HOST/$REPO:v{1..$IMAGE_COUNT}"
+echo "  in-cluster:  $IN_CLUSTER_HOST/$REPO:v{1..$IMAGE_COUNT}  (TLS, private CA)"
 echo "  public key:  $KEY_DIR/cosign.pub"
+echo "  CA bundle:   $KEY_DIR/ca-bundle.pem  (for admissionController.caCertificates.data)"
 echo "  delay:       ${DELAY_MS}ms  (change: ACTION=delay DELAY_MS=25 bash $0)"
