@@ -850,6 +850,10 @@ setup_kyverno() {
   # expanding an empty array under `set -u` is an unbound-variable error. The
   # override arrays are empty on the normal published-chart path, which is the
   # one the main ladder uses.
+  # Per-run chart overrides, for knobs that are not worth their own variable.
+  # Space-separated, e.g. EXTRA_HELM_ARGS="--set admissionController.profiling.enabled=true"
+  local extra_helm=()
+  [[ -n "${EXTRA_HELM_ARGS:-}" ]] && read -ra extra_helm <<< "$EXTRA_HELM_ARGS"
   helm install kyverno "${chart_args[@]}" \
     -n kyverno --create-namespace \
     -f "$VALUES" \
@@ -858,6 +862,7 @@ setup_kyverno() {
     --set "features.admissionReports.enabled=$reports_enabled" \
     --set-file "admissionController.caCertificates.data=$KEY_DIR/ca-bundle.pem" \
     --set crds.install=false \
+    ${extra_helm[@]+"${extra_helm[@]}"} \
     --wait --timeout 10m >/dev/null
   kubectl -n kyverno rollout status deploy/kyverno-admission-controller --timeout=300s
   assert_running_image
