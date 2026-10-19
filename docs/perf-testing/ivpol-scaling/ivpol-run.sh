@@ -230,6 +230,37 @@ else:
 PY
 }
 
+assert_policy_matches_template() {
+  # Prove the live policy is the one this cell asked for. The controls cannot:
+  # a positive and a negative control behave identically under every policy in
+  # this matrix, so a stale policy passes them and the cell silently measures
+  # the previous cell's configuration.
+  local want_attestors live_attestors live_names
+  want_attestors=$(python3 -c "
+import sys,yaml
+d=yaml.safe_load(open(sys.argv[1]))
+print(len(d['spec'].get('attestors',[])))" "$RENDERED_POLICY_PATH" 2>/dev/null || echo "?")
+  live_names=$(kubectl get ivpol --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null | tr '\n' ' ')
+  live_attestors=$(kubectl get ivpol "$IVPOL_NAME" -o json 2>/dev/null \
+    | python3 -c "
+import json,sys
+try: print(len(json.load(sys.stdin)['spec'].get('attestors',[])))
+except Exception: print('?')" 2>/dev/null || echo "?")
+  echo "policy check: $IVPOL_NAME live with $live_attestors attestor(s); cluster has: $live_names"
+  if [[ "$want_attestors" != "?" && "$live_attestors" != "$want_attestors" ]]; then
+    echo "FATAL: $IVPOL_NAME has $live_attestors attestor(s), template asked for $want_attestors."
+    echo "       The cell would measure a policy it did not request."
+    exit 1
+  fi
+  local extra
+  extra=$(kubectl get ivpol --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null | grep -v "^${IVPOL_NAME}$" || true)
+  if [[ -n "$extra" ]]; then
+    echo "FATAL: policies other than $IVPOL_NAME are live: $(echo $extra | tr '\n' ' ')"
+    echo "       Admission would be evaluated by all of them, not just this cell's."
+    exit 1
+  fi
+}
+
 apply_policy() {
   # Rendered filename carries the template's basename, not a fixed name, so
   # different policy variants in the same RESULTS_DIR don't overwrite each
@@ -734,7 +765,18 @@ setup_kyverno() {
   # Before the SKIP_INSTALL return: the ramp reuses one install across steps, and
   # each step still needs Prometheus reachable to fill its resource columns.
   start_prom_pf
-  [[ -n "$SKIP_INSTALL" ]] && { echo "SKIP_INSTALL set — reusing existing install"; return 0; }
+  # SKIP_INSTALL reuses the controller, but the policy is a per-cell input, not
+  # an install property: a sweep that varies POLICY_TEMPLATE across cells would
+  # otherwise measure the first cell's policy every time.
+  if [[ -n "$SKIP_INSTALL" ]]; then
+    echo "SKIP_INSTALL set — reusing existing install, reapplying this cell's policy"
+    kubectl create ns "$TEST_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+    apply_policy
+    assert_policy_matches_template
+    verify_ivpol_active
+    wait_until_serving "$(echo $IMAGES | awk '{print $1}')"
+    return 0
+  fi
   echo "==> installing Kyverno $KYVERNO_VERSION (chart $KYVERNO_CHART), cache mode $CACHE_MODE, reports $REPORTS"
   helm uninstall kyverno -n kyverno >/dev/null 2>&1 || true
   kubectl delete ns kyverno --ignore-not-found --wait=true >/dev/null 2>&1 || true
@@ -813,6 +855,7 @@ setup_kyverno() {
   assert_registry_trust
   kubectl create ns "$TEST_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   apply_policy
+  assert_policy_matches_template
   verify_ivpol_active
   # Cheapest shape, just to find the point where it is serving at all.
   wait_until_serving "$(echo $IMAGES | awk '{print $1}')"
