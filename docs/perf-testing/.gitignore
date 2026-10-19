@@ -15,3 +15,4 @@ ivpol-scaling/.charts/
 ivpol-scaling/registry/keys/*.key
 ivpol-scaling/registry/keys/*.crt
 ivpol-scaling/registry/keys/ca-bundle.pem
+ivpol-scaling/registry/keys/*.pub
