@@ -9,9 +9,10 @@
 # but never cached. Every admission re-walks both attestors from scratch.
 # See ivpol-cosign-key-split.yaml for the partial workaround.
 #
-# Two key placeholders, not one: KEY_A_PLACEHOLDER / KEY_B_PLACEHOLDER. The
-# renderer validates each occurs exactly once and that both decode to intact
-# PEM blocks, the same rigor ivpol-cosign-key.yaml applies to its single key.
+# Two key-data placeholders below, not one. The renderer validates each
+# occurs exactly once in this file and that both decode to intact PEM
+# blocks, the same rigor ivpol-cosign-key.yaml applies to its single key —
+# which is also why this sentence does not spell either token out literally.
 apiVersion: policies.kyverno.io/v1beta1
 kind: ImageValidatingPolicy
 metadata:

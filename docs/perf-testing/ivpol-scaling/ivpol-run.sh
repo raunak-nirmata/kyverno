@@ -14,6 +14,8 @@
 #   IMAGES="1 4" DELAYS="25" bash ivpol-run.sh                  # smoke
 #   CACHE_MODE=warm bash ivpol-run.sh
 #   KYVERNO_VERSION=1.19.0 KYVERNO_CHART=3.9.0 bash ivpol-run.sh
+#   REPORTS=off bash ivpol-run.sh                                # evidence-retention cell
+#   POLICY_TEMPLATE=policies/ivpol-cosign-key-combined.yaml bash ivpol-run.sh   # multi-attestor cells
 #
 # ladder-ivpol-run.sh drives this once per (round, version) slot.
 set -euo pipefail
@@ -50,18 +52,22 @@ IMAGES="${IMAGES:-1 2 4 8 16}"
 # difference between versions is the fetch pattern rather than anything else:
 # with no latency to serialise, the versions should converge.
 DELAYS="${DELAYS:-0 25 100}"
-# The ivpol evaluator constructs its compiler with
-# imageverifycache.DisabledImageVerifyCache() unconditionally
-# (pkg/image/verification/evaluator/eval.go:46, identical at v1.19.0 and
-# v1.19.1), so the verification cache is never consulted on this path and the
-# --imageVerifyCacheEnabled flag changes nothing here. Confirmed from the
-# archived counters: 7251 signature blob fetches for 904 requests x 8 images =
-# 7232, one fetch per image, no hits.
-#
-# The setting is kept only so an existing invocation does not break, and is
-# asserted to be "off" because any other value would imply a measurement the
-# code cannot produce.
+# pkg/image/verification/evaluator/eval.go's DisabledImageVerifyCache() is the
+# CLI apply/test path, not this one. The real admission path is
+# pkg/cel/policies/ivpol/engine/engine.go:513 (HandleValidating), which builds
+# its compiler with the configurable e.ivCache - only HandleMutating (:240,
+# the MutateDigest path, unused here) hardcodes the cache off. So
+# --imageVerifyCacheEnabled does change admission behaviour on this rig.
+# Earlier archived counters (7251 fetches for 904 requests x 8 images, no
+# hits) were from a run against that flag's default, not proof the flag is
+# inert - re-verify with assert_cache_mode before trusting a "no effect" claim.
 CACHE_MODE="${CACHE_MODE:-off}"
+# Evidence-retention toggle. features.admissionReports.enabled is consumed by
+# the chart's `with`-on-map helper (templates/_helpers.tpl), which tests the
+# map's presence, not the boolean inside it — unlike extraArgs' truthiness
+# test, so plain --set is safe here and false does not get silently dropped.
+# See assert_reports_mode, which proves this rather than assuming it.
+REPORTS="${REPORTS:-on}"
 VUS="${VUS:-20}"
 # Duration, not an iteration count. A fixed count makes cell length depend on how
 # expensive the cell is: 400 iterations at +100ms with 16 images runs ~32s, but
@@ -131,25 +137,77 @@ registry_ctl() { ACTION="$1" DELAY_MS="${2:-0}" bash "$HERE/registry/setup-regis
 
 # ---------------------------------------------------------------- policy
 
+# Maps a placeholder token found in a policy template to the file supplying
+# its value. Bash 3.2 (macOS) has no associative arrays, hence a case
+# statement rather than a dict. Add an entry here whenever a new policy
+# template introduces a new *_PLACEHOLDER token.
+placeholder_source() {
+  case "$1" in
+    PUBLIC_KEY_PLACEHOLDER) echo "$KEY_DIR/cosign.pub" ;;
+    KEY_A_PLACEHOLDER)      echo "$KEY_DIR/cosign.pub" ;;
+    KEY_B_PLACEHOLDER)      echo "$KEY_DIR/cosign-b.pub" ;;
+    KEY_C_PLACEHOLDER)      echo "$KEY_DIR/cosign-c.pub" ;;
+    CERT_CHAIN_PLACEHOLDER) echo "$KEY_DIR/codesign-ca.crt" ;;
+    *) return 1 ;;
+  esac
+}
+
 render_policy() {
-  # The public key is indented into the YAML block scalar. Done with python
-  # rather than sed because the key is multi-line and must keep its exact bytes:
-  # a mangled key fails verification, and a cell that fails verification is
-  # measuring the error path at full speed.
+  # Every key or cert chain is indented into its YAML block scalar with
+  # python rather than sed, because the value is multi-line and must keep its
+  # exact bytes: a mangled key fails verification, and a cell that fails
+  # verification is measuring the error path at full speed.
+  #
+  # Generalized from a single hardcoded PUBLIC_KEY_PLACEHOLDER: a multi-attestor
+  # template can carry several tokens (KEY_A_PLACEHOLDER, KEY_B_PLACEHOLDER,
+  # CERT_CHAIN_PLACEHOLDER, ...), and each is resolved and validated
+  # independently rather than assuming attestors[0] is the only one that matters.
   local out="$1"
-  python3 - "$POLICY_TEMPLATE" "$KEY_DIR/cosign.pub" "$out" <<'PY'
+  local tokens
+  tokens=$(grep -o '[A-Z_]*_PLACEHOLDER' "$POLICY_TEMPLATE" | sort -u)
+  if [[ -z "$tokens" ]]; then
+    echo "FATAL: $POLICY_TEMPLATE carries no _PLACEHOLDER token to render."
+    exit 1
+  fi
+  local args=() token src
+  for token in $tokens; do
+    src=$(placeholder_source "$token") || {
+      echo "FATAL: no source file mapped for placeholder $token in $POLICY_TEMPLATE."
+      echo "       Add it to placeholder_source() in ivpol-run.sh."
+      exit 1
+    }
+    [[ -f "$src" ]] || { echo "FATAL: placeholder $token maps to $src, which does not exist — run registry/setup-registry.sh."; exit 1; }
+    args+=("$token" "$src")
+  done
+  python3 - "$POLICY_TEMPLATE" "$out" "${args[@]}" <<'PY'
 import sys, pathlib
-template, keyfile, out = sys.argv[1:4]
-key = pathlib.Path(keyfile).read_text().rstrip("\n")
-indented = "\n".join("            " + line for line in key.splitlines())
+template, out = sys.argv[1], sys.argv[2]
+pairs = sys.argv[3:]
 text = pathlib.Path(template).read_text()
-# Exactly one occurrence, not at least one. A second one - in a comment
-# describing the placeholder, for instance - would also be substituted, splicing
-# a multi-line key into a comment and producing a manifest that does not parse.
-occurrences = text.count("PUBLIC_KEY_PLACEHOLDER")
-if occurrences != 1:
-    sys.exit(f"policy template has {occurrences} PUBLIC_KEY_PLACEHOLDER tokens, expected exactly 1")
-rendered = text.replace("PUBLIC_KEY_PLACEHOLDER", indented)
+lines = text.split("\n")
+rendered = text
+for i in range(0, len(pairs), 2):
+    token, valuefile = pairs[i], pairs[i + 1]
+    # Exactly one occurrence, not at least one. A second one - in a comment
+    # describing the placeholder, for instance - would also be substituted,
+    # splicing a multi-line value into a comment and producing a manifest
+    # that does not parse.
+    occurrences = text.count(token)
+    if occurrences != 1:
+        sys.exit(f"policy template has {occurrences} {token} tokens, expected exactly 1")
+    # Indent is derived from the block-scalar line above the placeholder
+    # ("key: |" / "value: |"), not a single hardcoded width: a key nested
+    # under cosign.key.data sits at a different depth than one nested under
+    # cosign.certificate.certChain.value, and a fixed indent that happens to
+    # work for one breaks the YAML block scalar for the other (the content
+    # must indent deeper than its parent key, not just differently from it).
+    placeholder_line = next(ln for ln in lines if ln.strip() == token)
+    parent_line = lines[lines.index(placeholder_line) - 1]
+    parent_indent = len(parent_line) - len(parent_line.lstrip(" "))
+    pad = " " * (parent_indent + 2)
+    value = pathlib.Path(valuefile).read_text().rstrip("\n")
+    indented = "\n".join(pad + line for line in value.splitlines())
+    rendered = rendered.replace(token, indented)
 pathlib.Path(out).write_text(rendered)
 # Parse what will actually be applied. A policy that does not round-trip is a
 # cell that fails for a reason unrelated to the thing being measured.
@@ -159,19 +217,34 @@ except ImportError:
     pass
 else:
     doc = yaml.safe_load(rendered)
-    got = doc["spec"]["attestors"][0]["cosign"]["key"]["data"].strip()
-    if not (got.startswith("-----BEGIN PUBLIC KEY-----") and got.endswith("-----END PUBLIC KEY-----")):
-        sys.exit("rendered policy does not carry an intact public key")
+    for att in doc["spec"]["attestors"]:
+        cosign = att.get("cosign", {})
+        if "key" in cosign:
+            got = cosign["key"]["data"].strip()
+            if not (got.startswith("-----BEGIN PUBLIC KEY-----") and got.endswith("-----END PUBLIC KEY-----")):
+                sys.exit(f"rendered policy attestor {att.get('name')} does not carry an intact public key")
+        elif "certificate" in cosign:
+            chain = cosign["certificate"].get("certChain", {}).get("value", "").strip()
+            if not (chain.startswith("-----BEGIN CERTIFICATE-----") and chain.endswith("-----END CERTIFICATE-----")):
+                sys.exit(f"rendered policy attestor {att.get('name')} does not carry an intact certificate chain")
 PY
 }
 
 apply_policy() {
-  local rendered="$RESULTS_DIR/ivpol-rendered.yaml"
-  render_policy "$rendered"
-  kubectl apply -f "$rendered" >/dev/null
-  kubectl wait --for=condition=Ready ivpol/ivpol-bench-cosign-key --timeout=120s >/dev/null 2>&1 \
+  # Rendered filename carries the template's basename, not a fixed name, so
+  # different policy variants in the same RESULTS_DIR don't overwrite each
+  # other's rendered output or its shasum in meta.txt.
+  local base; base="$(basename "$POLICY_TEMPLATE" .yaml)"
+  RENDERED_POLICY_PATH="$RESULTS_DIR/ivpol-rendered-$base.yaml"
+  render_policy "$RENDERED_POLICY_PATH"
+  kubectl apply -f "$RENDERED_POLICY_PATH" >/dev/null
+  # Read the actual metadata.name back rather than hardcoding
+  # ivpol-bench-cosign-key: every template now has its own distinct name.
+  IVPOL_NAME=$(awk '/^metadata:/{f=1; next} f && /^  name:/{print $2; exit}' "$RENDERED_POLICY_PATH")
+  [[ -n "$IVPOL_NAME" ]] || { echo "FATAL: could not read metadata.name from $RENDERED_POLICY_PATH"; exit 1; }
+  kubectl wait --for=condition=Ready "ivpol/$IVPOL_NAME" --timeout=120s >/dev/null 2>&1 \
     || echo "WARN: ivpol did not report Ready; controls below decide whether it is actually enforcing"
-  echo "applied $(kubectl get ivpol --no-headers 2>/dev/null | wc -l | tr -d ' ') ImageValidatingPolicy"
+  echo "applied $IVPOL_NAME ($(kubectl get ivpol --no-headers 2>/dev/null | wc -l | tr -d ' ') ImageValidatingPolicy total)"
 }
 
 # ---------------------------------------------------------------- gates
@@ -210,7 +283,14 @@ verify_ivpol_active() {
   # path and every latency number in this slot would be measuring an empty
   # pipeline. This is the gate that catches a mis-scoped matchImageReferences,
   # a policy that failed to compile, or a webhook that never registered.
-  local unsigned="$REGISTRY_HOST/$REPO:unsigned-control"
+  # VERIFY_REPO/VERIFY_TAG default to REPO/v1, the pinned single-key recipe's
+  # own repo — unchanged behaviour there. Multi-attestor cells set VERIFY_REPO
+  # to whichever repo the active policy is scoped to (e.g. bench/signed-cert,
+  # bench/signed-all), so this control actually exercises the policy under test
+  # instead of silently re-checking the single-key repo regardless of cell.
+  local verify_repo="${VERIFY_REPO:-$REPO}"
+  local verify_tag="${VERIFY_TAG:-v1}"
+  local unsigned="$REGISTRY_HOST/$verify_repo:unsigned-control"
   if pod_json "$unsigned" "ivpol-neg-control" | kubectl create --dry-run=server -f - >/tmp/ivpol-neg.out 2>&1; then
     echo "FATAL: negative control was ADMITTED — an unsigned image passed ivpol."
     sed 's/^/  negctl: /' /tmp/ivpol-neg.out
@@ -221,7 +301,7 @@ verify_ivpol_active() {
   # Positive control: a correctly signed image MUST be admitted. Without this,
   # a policy that rejects everything - wrong key, unreachable registry - would
   # pass the negative control and look like a working, very fast cell.
-  local signed="$REGISTRY_HOST/$REPO:v1"
+  local signed="$REGISTRY_HOST/$verify_repo:$verify_tag"
   if ! pod_json "$signed" "ivpol-pos-control" | kubectl create --dry-run=server -f - >/tmp/ivpol-pos.out 2>&1; then
     echo "FATAL: positive control was REJECTED — a correctly signed image failed ivpol."
     echo "       Every cell would be measuring the rejection path, not verification."
@@ -528,6 +608,27 @@ assert_cache_mode() {
   echo "cache flag verified: --imageVerifyCacheEnabled=$want"
 }
 
+assert_reports_mode() {
+  # Mirrors assert_cache_mode: prove the reports flag reached the container
+  # rather than trusting that passing it meant anything. This harness has
+  # twice been fooled by a Helm flag that was silently dropped — once already
+  # for imageVerifyCacheEnabled (see assert_cache_mode). admissionReports
+  # is set via the chart's `with`-on-map helper, not extraArgs, so it is not
+  # exposed to the same truthiness-drop bug, but "not exposed to that bug" is
+  # a claim worth checking, not trusting.
+  local want="$1"
+  local args
+  args=$(kubectl -n kyverno get deploy kyverno-admission-controller \
+    -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null)
+  if [[ "$args" != *"--admissionReports=$want"* ]]; then
+    echo "FATAL: reports mode not applied. Expected --admissionReports=$want"
+    echo "       in the running container's args, and it is not there."
+    echo "       REPORTS=$REPORTS would be a label on a cell that does not match it."
+    exit 1
+  fi
+  echo "reports flag verified: --admissionReports=$want"
+}
+
 assert_registry_trust() {
   # Prove TLS trust actually landed, rather than trusting that --set-file
   # meant anything. Three checks, each catching a distinct way this could
@@ -634,7 +735,7 @@ setup_kyverno() {
   # each step still needs Prometheus reachable to fill its resource columns.
   start_prom_pf
   [[ -n "$SKIP_INSTALL" ]] && { echo "SKIP_INSTALL set — reusing existing install"; return 0; }
-  echo "==> installing Kyverno $KYVERNO_VERSION (chart $KYVERNO_CHART), cache mode $CACHE_MODE"
+  echo "==> installing Kyverno $KYVERNO_VERSION (chart $KYVERNO_CHART), cache mode $CACHE_MODE, reports $REPORTS"
   helm uninstall kyverno -n kyverno >/dev/null 2>&1 || true
   kubectl delete ns kyverno --ignore-not-found --wait=true >/dev/null 2>&1 || true
 
@@ -651,6 +752,13 @@ setup_kyverno() {
     warm|postedit)  cache_enabled=true  ;;
     *)              echo "FATAL: CACHE_MODE=$CACHE_MODE is not one of off, warm, postedit."
                     exit 1 ;;
+  esac
+
+  local reports_enabled
+  case "$REPORTS" in
+    on)  reports_enabled=true ;;
+    off) reports_enabled=false ;;
+    *)   echo "FATAL: REPORTS=$REPORTS is not one of on, off"; exit 1 ;;
   esac
 
   local chart_args=()
@@ -694,12 +802,14 @@ setup_kyverno() {
     -f "$VALUES" \
     ${image_args[@]+"${image_args[@]}"} \
     --set-string "admissionController.container.extraArgs.imageVerifyCacheEnabled=$cache_enabled" \
+    --set "features.admissionReports.enabled=$reports_enabled" \
     --set-file "admissionController.caCertificates.data=$KEY_DIR/ca-bundle.pem" \
     --set crds.install=false \
     --wait --timeout 10m >/dev/null
   kubectl -n kyverno rollout status deploy/kyverno-admission-controller --timeout=300s
   assert_running_image
   assert_cache_mode "$cache_enabled"
+  assert_reports_mode "$reports_enabled"
   assert_registry_trust
   kubectl create ns "$TEST_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   apply_policy
@@ -715,9 +825,14 @@ touch_policy() {
   # generateKey), so this invalidates every entry for the policy without
   # changing what the policy does. That is the production gotcha the cache
   # chart exists to show: a routine edit silently returns you to the cold path.
-  kubectl annotate ivpol ivpol-bench-cosign-key \
+  #
+  # Uses $IVPOL_NAME, set by apply_policy from the rendered policy's actual
+  # metadata.name, rather than the single hardcoded ivpol-bench-cosign-key —
+  # every template now has its own name.
+  [[ -n "${IVPOL_NAME:-}" ]] || { echo "FATAL: touch_policy called before apply_policy set IVPOL_NAME."; exit 1; }
+  kubectl annotate ivpol "$IVPOL_NAME" \
     "bench.kyverno.io/touched-at=$(date -u +%s)" --overwrite >/dev/null
-  echo "policy annotated — resourceVersion bumped, cache entries invalidated"
+  echo "policy $IVPOL_NAME annotated — resourceVersion bumped, cache entries invalidated"
 }
 
 # ---------------------------------------------------------------- cells
@@ -807,6 +922,9 @@ run_cell() {
     echo "images_per_pod=$images"
     echo "registry_delay_ms=$delay"
     echo "cache_mode=$CACHE_MODE"
+    echo "reports_mode=$REPORTS"
+    echo "policy_template=$(basename "$POLICY_TEMPLATE")"
+    echo "verify_repo=${VERIFY_REPO:-$REPO}"
     echo "kyverno_version=$KYVERNO_VERSION"
     echo "kyverno_chart=${KYVERNO_CHART_PATH:-$KYVERNO_CHART}"
     echo "kyverno_image=$(cat "$RESULTS_DIR/running-image.txt" 2>/dev/null)"
@@ -820,6 +938,9 @@ run_cell() {
     echo "pod_restarts_cumulative=$(cat "$dir/restarts-cumulative.txt" 2>/dev/null || echo "")"
     echo "ivpol_present=$(kubectl get ivpol --no-headers 2>/dev/null | wc -l | tr -d ' ')"
     shasum -a 256 "$POLICY_TEMPLATE"
+    # The actual applied bytes, not just the unrendered template — this is
+    # what the cluster enforced, keys/cert chain included.
+    [[ -n "${RENDERED_POLICY_PATH:-}" && -f "$RENDERED_POLICY_PATH" ]] && shasum -a 256 "$RENDERED_POLICY_PATH"
   } > "$dir/meta.txt"
   echo "archived -> $dir"
 
