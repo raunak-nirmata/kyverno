@@ -268,10 +268,21 @@ apply_policy() {
   local base; base="$(basename "$POLICY_TEMPLATE" .yaml)"
   RENDERED_POLICY_PATH="$RESULTS_DIR/ivpol-rendered-$base.yaml"
   render_policy "$RENDERED_POLICY_PATH"
-  kubectl apply -f "$RENDERED_POLICY_PATH" >/dev/null
   # Read the actual metadata.name back rather than hardcoding
   # ivpol-bench-cosign-key: every template now has its own distinct name.
   IVPOL_NAME=$(awk '/^metadata:/{f=1; next} f && /^  name:/{print $2; exit}' "$RENDERED_POLICY_PATH")
+  # Drop every other policy first. Applying alongside a previous cell's policy
+  # leaves both enforcing, so admission pays for both and the cell measures a
+  # workload no one configured.
+  local stale
+  stale=$(kubectl get ivpol --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null \
+    | grep -v "^${IVPOL_NAME}$" || true)
+  if [[ -n "$stale" ]]; then
+    echo "removing policies from a previous cell: $(echo $stale | tr '\n' ' ')"
+    # shellcheck disable=SC2086
+    kubectl delete ivpol $stale --ignore-not-found >/dev/null 2>&1 || true
+  fi
+  kubectl apply -f "$RENDERED_POLICY_PATH" >/dev/null
   [[ -n "$IVPOL_NAME" ]] || { echo "FATAL: could not read metadata.name from $RENDERED_POLICY_PATH"; exit 1; }
   kubectl wait --for=condition=Ready "ivpol/$IVPOL_NAME" --timeout=120s >/dev/null 2>&1 \
     || echo "WARN: ivpol did not report Ready; controls below decide whether it is actually enforcing"
