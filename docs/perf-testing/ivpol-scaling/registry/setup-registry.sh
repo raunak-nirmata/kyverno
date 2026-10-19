@@ -21,6 +21,12 @@
 #   ACTION=stats bash setup-registry.sh               # read the request counters
 #   ACTION=reset bash setup-registry.sh               # zero the counters
 #   ACTION=delete bash setup-registry.sh
+#
+# EXTRA_ATTESTORS=1 (default) additionally builds: a second key-signed image
+# set ($REPO_B, key B) for the multi-attestor cache-defeat cells, a third key
+# (cosign-c, unused by any image here) for the per-attestor-count cost cells,
+# and a cert-chain-signed image set ($REPO_CERT) for the offline local-CA
+# cell. EXTRA_ATTESTORS=0 reproduces only the original single-key recipe.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -29,6 +35,11 @@ IMAGE_COUNT="${IMAGE_COUNT:-16}"
 DELAY_MS="${DELAY_MS:-0}"
 ACTION="${ACTION:-install}"
 REPO="${REPO:-bench/signed}"
+# Second key-signed set (key B) for the multi-attestor cache-defeat cells, and
+# a cert-chain-signed set for the offline local-CA cell (Task C).
+REPO_B="${REPO_B:-bench/signed-b}"
+REPO_CERT="${REPO_CERT:-bench/signed-cert}"
+EXTRA_ATTESTORS="${EXTRA_ATTESTORS:-1}"
 # What Kyverno resolves. Must match the policy's matchImageReferences glob.
 IN_CLUSTER_HOST="${IN_CLUSTER_HOST:-registry.${NS}.svc.cluster.local:5000}"
 # Host-side port-forward used only to push and sign. The registry host differs
@@ -169,6 +180,73 @@ kubectl -n "$NS" create secret generic registry-tls \
   --from-file=tls.key="$KEY_DIR/server.key" \
   --from-file=ca.crt="$KEY_DIR/ca.crt" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+if [[ "$EXTRA_ATTESTORS" == "1" ]]; then
+echo "==> code-signing CA + leaf certificates (Task C: offline cert-chain attestor)"
+# Deliberately separate from the TLS CA above: that one proves the registry is
+# who it says it is to Kyverno's HTTP client, this one proves a signer is who
+# it says it is to the cosign verifier. One CA for both would conflate two
+# different claims this benchmark wants to keep distinct on a slide.
+if [[ ! -f "$KEY_DIR/codesign-ca.key" ]]; then
+  openssl ecparam -name prime256v1 -genkey -noout -out "$KEY_DIR/codesign-ca.key"
+  openssl req -x509 -new -key "$KEY_DIR/codesign-ca.key" -out "$KEY_DIR/codesign-ca.crt" \
+    -days 3650 -subj "/CN=ivpol-bench-codesign-ca"
+  echo "generated $KEY_DIR/codesign-ca.crt"
+else
+  echo "reusing $KEY_DIR/codesign-ca.crt"
+fi
+# A second, unrelated CA used only to sign the negative control's leaf, so
+# that control fails on chain trust - the thing this attestor actually
+# checks - rather than on a missing tag.
+if [[ ! -f "$KEY_DIR/codesign-ca-wrong.key" ]]; then
+  openssl ecparam -name prime256v1 -genkey -noout -out "$KEY_DIR/codesign-ca-wrong.key"
+  openssl req -x509 -new -key "$KEY_DIR/codesign-ca-wrong.key" -out "$KEY_DIR/codesign-ca-wrong.crt" \
+    -days 3650 -subj "/CN=ivpol-bench-codesign-ca-wrong"
+  echo "generated $KEY_DIR/codesign-ca-wrong.crt"
+else
+  echo "reusing $KEY_DIR/codesign-ca-wrong.crt"
+fi
+
+mint_leaf_cert() {
+  # $1 = output path prefix, $2 = CA key, $3 = CA cert, $4 = leaf CN.
+  # codeSigning EKU is required: cosign's TrustedCert() builds the chain with
+  # x509.ExtKeyUsageCodeSigning and nothing else verifies. The SAN URI is set
+  # so the leaf looks like a real code-signing cert, but the certificate
+  # attestor used here (no "cert:" pin, only "certChain:") never reads it -
+  # confirmed by reading opts.go's Certificate branch - so it is not a
+  # security boundary in this benchmark, only documentation.
+  local prefix="$1" ca_key="$2" ca_crt="$3" cn="$4"
+  if [[ -f "$prefix.key" ]]; then
+    echo "reusing $prefix.crt"
+    return 0
+  fi
+  local cnf; cnf="$(mktemp)"
+  cat > "$cnf" <<EOF
+[req]
+distinguished_name = dn
+req_extensions = ext
+[dn]
+[ext]
+extendedKeyUsage = codeSigning
+subjectAltName = URI:https://ivpol-bench.example/signer
+EOF
+  openssl ecparam -name prime256v1 -genkey -noout -out "$prefix.key"
+  openssl req -new -key "$prefix.key" -out "$prefix.csr" -subj "/CN=$cn" -config "$cnf" -extensions ext
+  openssl x509 -req -in "$prefix.csr" -CA "$ca_crt" -CAkey "$ca_key" -CAcreateserial \
+    -out "$prefix.crt" -days 3650 -extfile "$cnf" -extensions ext
+  rm -f "$cnf" "$prefix.csr" "${ca_crt%.crt}.srl"
+  # cosign's --key loader only accepts its own "ENCRYPTED SIGSTORE PRIVATE KEY"
+  # PEM wrapper - a plain openssl EC key (SEC1 or PKCS8) is refused with
+  # "unsupported pem type" - so the raw key is imported rather than used as-is.
+  # Confirmed against the live binary before wiring this in.
+  COSIGN_PASSWORD="$COSIGN_PASSWORD" "$COSIGN_BIN" import-key-pair --key "$prefix.key" \
+    --output-key-prefix "$prefix-cosign" >/dev/null
+  echo "generated $prefix.crt (CN=$cn)"
+}
+
+mint_leaf_cert "$KEY_DIR/codesign-leaf" "$KEY_DIR/codesign-ca.key" "$KEY_DIR/codesign-ca.crt" "ivpol-bench-signer"
+mint_leaf_cert "$KEY_DIR/codesign-leaf-wrongca" "$KEY_DIR/codesign-ca-wrong.key" "$KEY_DIR/codesign-ca-wrong.crt" "ivpol-bench-signer-wrongca"
+fi
 
 # Pull once on the host and side-load, so repeated slots reuse the local copy.
 if [[ -n "$KIND_CLUSTER" ]] && command -v kind >/dev/null 2>&1 && command -v docker >/dev/null 2>&1; then
@@ -355,6 +433,24 @@ else
   echo "reusing $KEY_DIR/cosign.pub"
 fi
 
+if [[ "$EXTRA_ATTESTORS" == "1" ]]; then
+echo "==> second cosign key pair (key B, for multi-attestor cache-defeat cells)"
+if [[ ! -f "$KEY_DIR/cosign-b.key" ]]; then
+  ( cd "$KEY_DIR" && COSIGN_PASSWORD="$COSIGN_PASSWORD" "$COSIGN_BIN" generate-key-pair --output-key-prefix cosign-b >/dev/null )
+  echo "generated $KEY_DIR/cosign-b.pub"
+else
+  echo "reusing $KEY_DIR/cosign-b.pub"
+fi
+
+echo "==> third cosign key pair (key C, for the per-attestor-count cost cells)"
+if [[ ! -f "$KEY_DIR/cosign-c.key" ]]; then
+  ( cd "$KEY_DIR" && COSIGN_PASSWORD="$COSIGN_PASSWORD" "$COSIGN_BIN" generate-key-pair --output-key-prefix cosign-c >/dev/null )
+  echo "generated $KEY_DIR/cosign-c.pub"
+else
+  echo "reusing $KEY_DIR/cosign-c.pub"
+fi
+fi
+
 echo "==> port-forward for push (localhost:$PUSH_PORT)"
 # Forwards to the backend, not the proxy: pushes neither need TLS nor should
 # count against the registry-request counters a cell gates on.
@@ -371,41 +467,121 @@ done
 curl -sf "http://127.0.0.1:$PUSH_PORT/v2/" >/dev/null 2>&1 \
   || { echo "FATAL: registry not reachable through port-forward on $PUSH_PORT"; exit 1; }
 
-echo "==> build, push, sign $IMAGE_COUNT images"
+echo "==> build, push, sign $IMAGE_COUNT images per signed image set"
 # crane, not docker. On Docker Desktop the daemon runs inside its own VM, so a
 # `docker push` to 127.0.0.1:$PUSH_PORT resolves to the VM's loopback and never
 # reaches the kubectl port-forward listening on the host's. crane runs in this
 # process, on the host, and speaks plain HTTP with --insecure.
 BUILD="$(mktemp -d)"
 trap 'kill $PF 2>/dev/null || true; rm -rf "$BUILD"' EXIT
-for i in $(seq 1 "$IMAGE_COUNT"); do
-  tag="v$i"
-  # One distinct byte-string per image so every tag resolves to its own digest
-  # and forces its own manifest fetch. Identical content would collapse them.
-  printf 'ivpol-benchmark image %s\n' "$i" > "$BUILD/marker"
+
+# Builds, pushes, and key-signs IMAGE_COUNT images plus an unsigned control in
+# $1, using the key at $2. The marker content is salted with the repo name so
+# that two repos sharing a tag number (v1 in $REPO and v1 in $REPO_B) don't
+# also share a layer blob - harmless for the registry, but confusing to debug
+# by hand if every repo's v1 looked byte-identical.
+sign_key_image_set() {
+  local repo="$1" keyfile="$2"
+  local i tag
+  for i in $(seq 1 "$IMAGE_COUNT"); do
+    tag="v$i"
+    printf 'ivpol-benchmark image %s (%s)\n' "$i" "$repo" > "$BUILD/marker"
+    ( cd "$BUILD" && tar cf layer.tar marker )
+    crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$repo:$tag" --insecure >/dev/null 2>&1 \
+      || { echo "FATAL: crane could not push $repo:$tag"; exit 1; }
+    # --use-signing-config=false is required with cosign v3: --tlog-upload=false
+    # alone is refused, because a default signing config naming a transparency log
+    # is in play. There is no Rekor here by design.
+    "$COSIGN_BIN" sign --yes --tlog-upload=false \
+      --allow-insecure-registry \
+      --key "$keyfile" \
+      "127.0.0.1:$PUSH_PORT/$repo:$tag" >/dev/null 2>&1 \
+      || { echo "FATAL: cosign could not sign $repo:$tag with $keyfile"; exit 1; }
+    printf '  signed %s:%s (%s)\r' "$repo" "$tag" "$(basename "$keyfile")"
+  done
+  echo
+  # An image that exists but carries no signature. Without it the negative
+  # control would point at a tag that is simply missing, and the registry's
+  # MANIFEST_UNKNOWN would reject the Pod whether or not verification works at
+  # all - a gate that passes on a completely broken policy.
+  printf 'ivpol-benchmark unsigned control (%s)\n' "$repo" > "$BUILD/marker"
   ( cd "$BUILD" && tar cf layer.tar marker )
-  crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$REPO:$tag" --insecure >/dev/null 2>&1 \
-    || { echo "FATAL: crane could not push $REPO:$tag"; exit 1; }
-  # --use-signing-config=false is required with cosign v3: --tlog-upload=false
-  # alone is refused, because a default signing config naming a transparency log
-  # is in play. There is no Rekor here by design.
-  "$COSIGN_BIN" sign --yes --tlog-upload=false \
-    --allow-insecure-registry \
-    --key "$KEY_DIR/cosign.key" \
-    "127.0.0.1:$PUSH_PORT/$REPO:$tag" >/dev/null 2>&1 \
-    || { echo "FATAL: cosign could not sign $REPO:$tag"; exit 1; }
-  printf '  signed %s:%s\r' "$REPO" "$tag"
-done
-echo
-# An image that exists but carries no signature. Without it the negative control
-# would point at a tag that is simply missing, and the registry's
-# MANIFEST_UNKNOWN would reject the Pod whether or not verification works at
-# all - a gate that passes on a completely broken policy.
-printf 'ivpol-benchmark unsigned control\n' > "$BUILD/marker"
-( cd "$BUILD" && tar cf layer.tar marker )
-crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$REPO:unsigned-control" --insecure >/dev/null 2>&1 \
-  || { echo "FATAL: could not push the unsigned control image"; exit 1; }
-echo "  pushed $REPO:unsigned-control (deliberately unsigned)"
+  crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$repo:unsigned-control" --insecure >/dev/null 2>&1 \
+    || { echo "FATAL: could not push the unsigned control image for $repo"; exit 1; }
+  echo "  pushed $repo:unsigned-control (deliberately unsigned)"
+}
+
+# Same as above, but cert-chain signed (Task C): $2 is a cosign-imported key,
+# $3 the leaf cert, $4 the CA chain presented alongside it.
+sign_cert_image_set() {
+  local repo="$1" keyfile="$2" certfile="$3" chainfile="$4"
+  local i tag
+  for i in $(seq 1 "$IMAGE_COUNT"); do
+    tag="v$i"
+    printf 'ivpol-benchmark image %s (%s)\n' "$i" "$repo" > "$BUILD/marker"
+    ( cd "$BUILD" && tar cf layer.tar marker )
+    crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$repo:$tag" --insecure >/dev/null 2>&1 \
+      || { echo "FATAL: crane could not push $repo:$tag"; exit 1; }
+    "$COSIGN_BIN" sign --yes --tlog-upload=false --allow-insecure-registry \
+      --key "$keyfile" --cert "$certfile" --cert-chain "$chainfile" \
+      "127.0.0.1:$PUSH_PORT/$repo:$tag" >/dev/null 2>&1 \
+      || { echo "FATAL: cosign could not cert-sign $repo:$tag"; exit 1; }
+    printf '  cert-signed %s:%s\r' "$repo" "$tag"
+  done
+  echo
+  printf 'ivpol-benchmark unsigned control (%s)\n' "$repo" > "$BUILD/marker"
+  ( cd "$BUILD" && tar cf layer.tar marker )
+  crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$repo:unsigned-control" --insecure >/dev/null 2>&1 \
+    || { echo "FATAL: could not push the unsigned control image for $repo"; exit 1; }
+  echo "  pushed $repo:unsigned-control (deliberately unsigned)"
+}
+
+sign_key_image_set "$REPO" "$KEY_DIR/cosign.key"
+
+if [[ "$EXTRA_ATTESTORS" == "1" ]]; then
+  sign_key_image_set "$REPO_B" "$KEY_DIR/cosign-b.key"
+
+  sign_cert_image_set "$REPO_CERT" "$KEY_DIR/codesign-leaf-cosign.key" "$KEY_DIR/codesign-leaf.crt" "$KEY_DIR/codesign-ca.crt"
+  # The chain-trust negative control: a tag that exists and carries a real
+  # signature, just from a leaf that chains to a CA the benchmark policy does
+  # not trust. Distinct from unsigned-control, which tests "no signature at
+  # all" - this tests "a signature the trust root rejects", the actual
+  # negative case for this attestor.
+  printf 'ivpol-benchmark wrong-ca control (%s)\n' "$REPO_CERT" > "$BUILD/marker"
+  ( cd "$BUILD" && tar cf layer.tar marker )
+  crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$REPO_CERT:wrong-ca-control" --insecure >/dev/null 2>&1 \
+    || { echo "FATAL: could not push wrong-ca-control"; exit 1; }
+  "$COSIGN_BIN" sign --yes --tlog-upload=false --allow-insecure-registry \
+    --key "$KEY_DIR/codesign-leaf-wrongca-cosign.key" \
+    --cert "$KEY_DIR/codesign-leaf-wrongca.crt" --cert-chain "$KEY_DIR/codesign-ca-wrong.crt" \
+    "127.0.0.1:$PUSH_PORT/$REPO_CERT:wrong-ca-control" >/dev/null 2>&1 \
+    || { echo "FATAL: cosign could not sign wrong-ca-control"; exit 1; }
+  echo "  signed $REPO_CERT:wrong-ca-control (leaf from a CA the policy will not trust)"
+
+  # All-keys-signed set, for the per-attestor-count cost cells (1, 2, 3
+  # attestors as a serial-cost ramp, not a cache-defeat story). Every image in
+  # $REPO_ALL carries valid signatures from all three keys, so a policy listing
+  # any subset of {A,B,C} always has count == len(attestors) and the cache
+  # behaves normally - only the per-image verification work changes.
+  REPO_ALL="${REPO_ALL:-bench/signed-all}"
+  sign_key_image_set "$REPO_ALL" "$KEY_DIR/cosign.key"
+  for i in $(seq 1 "$IMAGE_COUNT"); do
+    "$COSIGN_BIN" sign --yes --tlog-upload=false --allow-insecure-registry \
+      --key "$KEY_DIR/cosign-b.key" "127.0.0.1:$PUSH_PORT/$REPO_ALL:v$i" >/dev/null 2>&1 \
+      || { echo "FATAL: could not add key B signature to $REPO_ALL:v$i"; exit 1; }
+    "$COSIGN_BIN" sign --yes --tlog-upload=false --allow-insecure-registry \
+      --key "$KEY_DIR/cosign-c.key" "127.0.0.1:$PUSH_PORT/$REPO_ALL:v$i" >/dev/null 2>&1 \
+      || { echo "FATAL: could not add key C signature to $REPO_ALL:v$i"; exit 1; }
+  done
+  echo "  signed $REPO_ALL with all three keys (A, B, C) — one tag, three signatures"
+  for k in cosign.pub cosign-b.pub cosign-c.pub; do
+    "$COSIGN_BIN" verify --key "$KEY_DIR/$k" --insecure-ignore-tlog=true \
+      --allow-insecure-registry "127.0.0.1:$PUSH_PORT/$REPO_ALL:v1" >/dev/null 2>&1 \
+      || { echo "FATAL: $REPO_ALL:v1 does not verify against $k — the per-attestor-count"
+           echo "       cells need every image to carry all three signatures."; exit 1; }
+  done
+  echo "all-keys check OK: $REPO_ALL:v1 verifies against keys A, B, and C independently"
+fi
 
 echo "==> verifying the signature exists and verifies"
 # Not "the same path Kyverno will use" anymore: this goes straight to the
@@ -416,9 +592,54 @@ echo "==> verifying the signature exists and verifies"
   "127.0.0.1:$PUSH_PORT/$REPO:v1" >/dev/null 2>&1 \
   || { echo "FATAL: signature does not verify; every cell would measure a failing policy"; exit 1; }
 
+if [[ "$EXTRA_ATTESTORS" == "1" ]]; then
+  echo "==> verifying key B signs/verifies, and that key A rejects a key-B-only image"
+  "$COSIGN_BIN" verify --key "$KEY_DIR/cosign-b.pub" --insecure-ignore-tlog=true \
+    --allow-insecure-registry "127.0.0.1:$PUSH_PORT/$REPO_B:v1" >/dev/null 2>&1 \
+    || { echo "FATAL: key B's own signature does not verify."; exit 1; }
+  if "$COSIGN_BIN" verify --key "$KEY_DIR/cosign.pub" --insecure-ignore-tlog=true \
+      --allow-insecure-registry "127.0.0.1:$PUSH_PORT/$REPO_B:v1" >/dev/null 2>&1; then
+    echo "FATAL: key A verified an image signed only by key B — the two keys are not"
+    echo "       actually distinct, and every split-policy cell would be unmeasurable."
+    exit 1
+  fi
+  echo "cross-key check OK: key A cannot verify a key-B-only image"
+
+  echo "==> verifying the cert-chain image set, and the wrong-CA negative control"
+  "$COSIGN_BIN" verify --cert-chain "$KEY_DIR/codesign-ca.crt" \
+    --certificate-identity-regexp '.*' --certificate-oidc-issuer-regexp '.*' \
+    --insecure-ignore-tlog=true --insecure-ignore-sct=true --allow-insecure-registry \
+    "127.0.0.1:$PUSH_PORT/$REPO_CERT:v1" >/dev/null 2>&1 \
+    || { echo "FATAL: cert-chain signature does not verify against the trusted CA."; exit 1; }
+  if "$COSIGN_BIN" verify --cert-chain "$KEY_DIR/codesign-ca.crt" \
+      --certificate-identity-regexp '.*' --certificate-oidc-issuer-regexp '.*' \
+      --insecure-ignore-tlog=true --insecure-ignore-sct=true --allow-insecure-registry \
+      "127.0.0.1:$PUSH_PORT/$REPO_CERT:wrong-ca-control" >/dev/null 2>/tmp/ivpol-wrongca-verify.err; then
+    echo "FATAL: the wrong-CA control verified against our trusted CA — the negative"
+    echo "       control does not actually test chain trust."
+    exit 1
+  fi
+  if ! grep -qi "unknown authority" /tmp/ivpol-wrongca-verify.err; then
+    echo "FATAL: wrong-ca-control was rejected, but not for a chain-trust reason:"
+    sed 's/^/  wrongca: /' /tmp/ivpol-wrongca-verify.err
+    echo "       A tag or registry mistake here would look identical to a real finding."
+    exit 1
+  fi
+  echo "wrong-CA control OK: rejected as 'certificate signed by unknown authority', not a missing tag"
+fi
+
 echo
 echo "registry ready"
-echo "  in-cluster:  $IN_CLUSTER_HOST/$REPO:v{1..$IMAGE_COUNT}  (TLS, private CA)"
-echo "  public key:  $KEY_DIR/cosign.pub"
-echo "  CA bundle:   $KEY_DIR/ca-bundle.pem  (for admissionController.caCertificates.data)"
-echo "  delay:       ${DELAY_MS}ms  (change: ACTION=delay DELAY_MS=25 bash $0)"
+echo "  in-cluster:   $IN_CLUSTER_HOST/$REPO:v{1..$IMAGE_COUNT}  (TLS, private CA, key A)"
+echo "  public key A: $KEY_DIR/cosign.pub"
+if [[ "$EXTRA_ATTESTORS" == "1" ]]; then
+echo "  in-cluster:   $IN_CLUSTER_HOST/$REPO_B:v{1..$IMAGE_COUNT}  (key B)"
+echo "  public key B: $KEY_DIR/cosign-b.pub"
+echo "  public key C: $KEY_DIR/cosign-c.pub  (unused by any image; for N-attestor cost cells)"
+echo "  in-cluster:   $IN_CLUSTER_HOST/$REPO_CERT:v{1..$IMAGE_COUNT}  (cert-chain signed, offline)"
+echo "  code CA:      $KEY_DIR/codesign-ca.crt  (trusted root for the cert-chain policy)"
+echo "  wrong CA:     $KEY_DIR/codesign-ca-wrong.crt  (signs wrong-ca-control only)"
+echo "  in-cluster:   $IN_CLUSTER_HOST/${REPO_ALL:-bench/signed-all}:v{1..$IMAGE_COUNT}  (signed by keys A, B, C)"
+fi
+echo "  CA bundle:    $KEY_DIR/ca-bundle.pem  (for admissionController.caCertificates.data)"
+echo "  delay:        ${DELAY_MS}ms  (change: ACTION=delay DELAY_MS=25 bash $0)"

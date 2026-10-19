@@ -1,0 +1,64 @@
+# Two-key-attestor ImageValidatingPolicy, combined form - the cache-cliff cell.
+#
+# verifyImageSignatures(image, [attestors.a, attestors.b]) > 0 is the natural
+# way to write "trust either root" for a mixed-source fleet. Kyverno's
+# verification cache only writes an entry when count == len(attestors)
+# (pkg/cel/libs/imageverify/impl.go:202/301), but the policy passes on
+# count > 0 (impl.go:205). Images signed by key A alone, matched against this
+# two-attestor list, verify with count=1 against len(attestors)=2: admitted,
+# but never cached. Every admission re-walks both attestors from scratch.
+# See ivpol-cosign-key-split.yaml for the partial workaround.
+#
+# Two key placeholders, not one: KEY_A_PLACEHOLDER / KEY_B_PLACEHOLDER. The
+# renderer validates each occurs exactly once and that both decode to intact
+# PEM blocks, the same rigor ivpol-cosign-key.yaml applies to its single key.
+apiVersion: policies.kyverno.io/v1beta1
+kind: ImageValidatingPolicy
+metadata:
+  name: ivpol-bench-cosign-key-combined
+spec:
+  webhookConfiguration:
+    timeoutSeconds: 30
+  failurePolicy: Fail
+  validationActions:
+    - Deny
+  evaluation:
+    mode: Kubernetes
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  matchImageReferences:
+    # Both repos listed explicitly, not a shared wildcard: a glob wide enough
+    # to catch both bench/signed and bench/signed-b would also catch every
+    # other bench/* repo this harness creates, which is a scoping bug waiting
+    # to measure the wrong image.
+    - glob: "registry.bench-registry.svc.cluster.local:5000/bench/signed:*"
+    - glob: "registry.bench-registry.svc.cluster.local:5000/bench/signed-b:*"
+  validationConfigurations:
+    mutateDigest: false
+    verifyDigest: false
+    required: false
+  attestors:
+    - name: a
+      cosign:
+        key:
+          data: |
+KEY_A_PLACEHOLDER
+        ctlog:
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+    - name: b
+      cosign:
+        key:
+          data: |
+KEY_B_PLACEHOLDER
+        ctlog:
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+  validations:
+    - expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.a, attestors.b])).all(count, count > 0)
+      message: "every container image must carry a valid signature from attestor a or b"

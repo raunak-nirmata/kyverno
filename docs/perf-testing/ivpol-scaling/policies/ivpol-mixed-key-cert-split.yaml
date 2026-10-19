@@ -1,0 +1,55 @@
+# Mixed-attestor ImageValidatingPolicy, split form - the partial workaround for
+# the mixed key+certificate pairing. See ivpol-mixed-key-cert-combined.yaml and
+# ivpol-cosign-key-split.yaml for the mechanism and its residual cost: an image
+# signed only by the certificate attestor still pays an uncached, failed walk
+# of attestor a on every admission before the cert attestor succeeds.
+apiVersion: policies.kyverno.io/v1beta1
+kind: ImageValidatingPolicy
+metadata:
+  name: ivpol-bench-mixed-key-cert-split
+spec:
+  webhookConfiguration:
+    timeoutSeconds: 30
+  failurePolicy: Fail
+  validationActions:
+    - Deny
+  evaluation:
+    mode: Kubernetes
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  matchImageReferences:
+    - glob: "registry.bench-registry.svc.cluster.local:5000/bench/signed:*"
+    - glob: "registry.bench-registry.svc.cluster.local:5000/bench/signed-cert:*"
+  validationConfigurations:
+    mutateDigest: false
+    verifyDigest: false
+    required: false
+  attestors:
+    - name: a
+      cosign:
+        key:
+          data: |
+KEY_A_PLACEHOLDER
+        ctlog:
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+    - name: cert
+      cosign:
+        certificate:
+          certChain:
+            value: |
+CERT_CHAIN_PLACEHOLDER
+        ctlog:
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+  validations:
+    - expression: >-
+        images.containers.map(image,
+          verifyImageSignatures(image, [attestors.a]) > 0 ||
+          verifyImageSignatures(image, [attestors.cert]) > 0
+        ).all(ok, ok)
+      message: "every container image must carry a valid signature from attestor a or the benchmark code-signing CA"

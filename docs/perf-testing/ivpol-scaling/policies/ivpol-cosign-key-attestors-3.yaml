@@ -1,0 +1,55 @@
+# Per-attestor-cost cell, N=3 attestors. See ivpol-cosign-key-attestors-1.yaml
+# for why this targets bench/signed-all rather than the cache-defeat repos.
+apiVersion: policies.kyverno.io/v1beta1
+kind: ImageValidatingPolicy
+metadata:
+  name: ivpol-bench-cosign-key-attestors-3
+spec:
+  webhookConfiguration:
+    timeoutSeconds: 30
+  failurePolicy: Fail
+  validationActions:
+    - Deny
+  evaluation:
+    mode: Kubernetes
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  matchImageReferences:
+    - glob: "registry.bench-registry.svc.cluster.local:5000/bench/signed-all:*"
+  validationConfigurations:
+    mutateDigest: false
+    verifyDigest: false
+    required: false
+  attestors:
+    - name: a
+      cosign:
+        key:
+          data: |
+KEY_A_PLACEHOLDER
+        ctlog:
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+    - name: b
+      cosign:
+        key:
+          data: |
+KEY_B_PLACEHOLDER
+        ctlog:
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+    - name: c
+      cosign:
+        key:
+          data: |
+KEY_C_PLACEHOLDER
+        ctlog:
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+  validations:
+    - expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.a, attestors.b, attestors.c])).all(count, count == 3)
+      message: "every container image must carry valid signatures from attestors a, b, and c"

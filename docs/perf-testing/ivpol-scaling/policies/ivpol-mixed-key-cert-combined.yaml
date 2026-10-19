@@ -1,0 +1,57 @@
+# Mixed-attestor ImageValidatingPolicy, combined form: one key attestor (a)
+# paired with one certificate attestor (cert) with a different trust root
+# (the local code-signing CA - see ivpol-cosign-certchain.yaml for why this is
+# a certificate attestor and not a keyless one). This is closer to the talk's
+# real architecture than the two-key version in ivpol-cosign-key-combined.yaml:
+# an internal key-signed root next to a certificate-chain-signed root, same
+# cache-defeat mechanism (count != len(attestors), impl.go:202/301/205).
+#
+# bench/signed images (key a only) give count=1 against len(attestors)=2 here:
+# admitted, never cached, every admission re-walks both attestors.
+apiVersion: policies.kyverno.io/v1beta1
+kind: ImageValidatingPolicy
+metadata:
+  name: ivpol-bench-mixed-key-cert-combined
+spec:
+  webhookConfiguration:
+    timeoutSeconds: 30
+  failurePolicy: Fail
+  validationActions:
+    - Deny
+  evaluation:
+    mode: Kubernetes
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  matchImageReferences:
+    - glob: "registry.bench-registry.svc.cluster.local:5000/bench/signed:*"
+    - glob: "registry.bench-registry.svc.cluster.local:5000/bench/signed-cert:*"
+  validationConfigurations:
+    mutateDigest: false
+    verifyDigest: false
+    required: false
+  attestors:
+    - name: a
+      cosign:
+        key:
+          data: |
+KEY_A_PLACEHOLDER
+        ctlog:
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+    - name: cert
+      cosign:
+        certificate:
+          certChain:
+            value: |
+CERT_CHAIN_PLACEHOLDER
+        ctlog:
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+  validations:
+    - expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.a, attestors.cert])).all(count, count > 0)
+      message: "every container image must carry a valid signature from attestor a or the benchmark code-signing CA"
