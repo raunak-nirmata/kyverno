@@ -1,0 +1,69 @@
+# Kyverno control-plane config for the ivpol scaling benchmark.
+#
+# Starts from the ClusterPolicy arm's kyverno-scaling-values.yaml - same
+# isolation of the admission data path, same no-limits and relaxed-probe
+# reasoning - and adds what image verification needs. Kept as a separate file
+# rather than a patch so a cell can archive exactly the values it ran with.
+#
+# The benchmark registry is served over TLS by the delay proxy (see
+# registry/setup-registry.sh); it no longer needs allowInsecureRegistry, and
+# ivpol-run.sh asserts the flag stays absent. The CA that makes the registry
+# trusted is injected here by ivpol-run.sh via --set-file
+# admissionController.caCertificates.data=registry/keys/ca-bundle.pem, which
+# the chart renders as a ConfigMap and mounts over the image's own bundle at
+# /etc/ssl/certs/ca-certificates.crt.
+#
+#   imageVerifyCache*      Exposed so a cell can choose its cache state instead
+#                          of inheriting the default. The defaults are enabled,
+#                          1000 keys, 60m TTL (cmd/internal/flag.go:166-168);
+#                          ivpol-run.sh overrides them per cell and records
+#                          which state it ran in.
+admissionController:
+  container:
+    resources:
+      # No limits: a limit turns the CPU/memory columns into a ceiling readout
+      # instead of a demand measurement, and risks OOMKill at high VU counts.
+      limits: null
+      requests:
+        cpu: 250m
+        memory: 256Mi
+    extraArgs:
+      # Overridden per cell by ivpol-run.sh via --set. Listed here so the
+      # defaults are visible in the archived values rather than implicit.
+      imageVerifyCacheEnabled: true
+      imageVerifyCacheMaxSize: 1000
+      imageVerifyCacheTTLDuration: 60m
+  # Relaxed probes, same reasoning as the ClusterPolicy arm: under load a
+  # busy-but-alive admission pod cannot answer /health within the chart's
+  # default 5s timeout, and kubelet restarting it mid-cell empties the webhook
+  # Service, which with failurePolicy=Fail turns every in-flight request into a
+  # failure. Image verification makes this *more* likely, not less, because a
+  # request can sit waiting on a registry round trip.
+  livenessProbe:
+    httpGet:
+      path: /health/liveness
+      port: 9443
+      scheme: HTTPS
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 10
+    failureThreshold: 10
+    successThreshold: 1
+  readinessProbe:
+    httpGet:
+      path: /health/readiness
+      port: 9443
+      scheme: HTTPS
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 10
+    failureThreshold: 10
+    successThreshold: 1
+  serviceMonitor:
+    enabled: true
+backgroundController:
+  enabled: false
+cleanupController:
+  enabled: false
+reportsController:
+  enabled: false

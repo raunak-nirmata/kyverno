@@ -1,0 +1,60 @@
+# Kyverno control-plane config for the ClusterPolicy scaling reproduction.
+#
+# Isolates the admission data path so the CPU/Memory columns reflect admission
+# work, not side controllers:
+#   - no container CPU/memory limits (a limit would cap the "CPU/Memory (max)"
+#     columns and turn a demand measurement into a ceiling readout; also risks
+#     OOMKill at 500 VUs)
+#   - background, cleanup, and reports controllers disabled
+#
+# admissionController.replicas is NOT set here; scaling-run.sh sets it per leg
+# (--set admissionController.replicas={1,3}) so replicas is the only variable.
+admissionController:
+  container:
+    resources:
+      # No limits (a limit would cap the "CPU/Memory (max)" columns). Modest
+      # requests give the scheduler headroom on a small host.
+      limits: null
+      requests:
+        cpu: 250m
+        memory: 256Mi
+  # Relaxed liveness/readiness probes. With chart defaults (liveness
+  # timeoutSeconds 5, failureThreshold 2) a busy-but-alive admission pod cannot
+  # answer /health within 5s under load, so kubelet kills and restarts it; while
+  # it restarts the webhook Service has no endpoints and every in-flight request
+  # fails with "connection refused" (failurePolicy=Fail then rejects it). On the
+  # 32-core docs hardware the pod stays responsive and this never happens, so
+  # relaxing the probes here removes a small-host artifact and keeps the
+  # measurement on admission latency. Applied uniformly to every cell.
+  livenessProbe:
+    httpGet:
+      path: /health/liveness
+      port: 9443
+      scheme: HTTPS
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 10
+    failureThreshold: 10
+    successThreshold: 1
+  readinessProbe:
+    httpGet:
+      path: /health/readiness
+      port: 9443
+      scheme: HTTPS
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 10
+    failureThreshold: 10
+    successThreshold: 1
+  # Let Prometheus scrape Kyverno's own metrics so scaling-run.sh can capture
+  # kyverno_admission_review_duration_* as a cross-check on whether Kyverno or
+  # the k6 loader saturated at high VU counts. Prometheus selects all
+  # ServiceMonitors (serviceMonitorSelectorNilUsesHelmValues=false in setup).
+  serviceMonitor:
+    enabled: true
+backgroundController:
+  enabled: false
+cleanupController:
+  enabled: false
+reportsController:
+  enabled: false

@@ -1,0 +1,79 @@
+# Offline local-CA ImageValidatingPolicy for the ivpol scaling benchmark.
+#
+# THIS IS LOCAL X.509 CERTIFICATE-CHAIN VERIFICATION, NOT KEYLESS. Do not
+# relabel a result from this file as a "keyless" cell; it is not one, and the
+# difference is the whole point of this comment.
+#
+# Why not cosign.keyless here, when the API has a Keyless.Roots field that
+# looks like it should let keyless run offline against a CA we control:
+# checkOptions (pkg/image/verifiers/ivpol/cosign/opts.go) sets
+# skipSigstoreInfra := keyOrCert && ignoreTlog, and keyOrCert is defined as
+# att.Keyless == nil && (att.Key != nil || att.Certificate != nil) - so
+# skipSigstoreInfra is false for every Keyless attestor regardless of
+# ctlog.insecureIgnoreTlog/insecureIgnoreSCT. The Keyless branch then reads
+# trust.fulcioRoots, which only exists if initTUFAndFetch ran - confirmed by
+# reading the function: it takes a process-wide lock and fetches trusted-root
+# and Fulcio/Rekor/CTLog material, by default from Sigstore's public TUF CDN,
+# on every single check. Keyless.Roots overrides the cert pool only *after*
+# that fetch, so it cannot make the path offline. See the separate keyless
+# concurrency probe (not part of this offline matrix) for what that lock
+# actually costs.
+#
+# cosign.certificate, used here, takes the same skipSigstoreInfra fast path
+# the key-based policy already uses: no TUF, no lock, no network. It validates
+# the certificate embedded in the image's signature against certChain (our
+# local code-signing CA) via x509 chain building - exactly what
+# `cosign verify --cert-chain <ca>` does on the CLI, which is how this policy
+# was spiked and proven before being wired in. It does NOT check Fulcio-style
+# identities (keyless.identities, the OIDC-issuer certificate extension); the
+# leaf certificate's SAN URI and codeSigning EKU exist so it looks like a real
+# code-signing cert, but nothing here reads them.
+#
+# Images: registry/setup-registry.sh signs bench/signed-cert with a leaf
+# chaining to $KEY_DIR/codesign-ca.crt (the certChain below), and signs
+# bench/signed-cert:wrong-ca-control with a leaf from an unrelated CA, so the
+# negative control fails on chain trust (x509: certificate signed by unknown
+# authority), not on a missing tag.
+apiVersion: policies.kyverno.io/v1beta1
+kind: ImageValidatingPolicy
+metadata:
+  name: ivpol-bench-cosign-certchain
+spec:
+  webhookConfiguration:
+    timeoutSeconds: 30
+  failurePolicy: Fail
+  validationActions:
+    - Deny
+  evaluation:
+    mode: Kubernetes
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  matchImageReferences:
+    - glob: "registry.bench-registry.svc.cluster.local:5000/bench/signed-cert:*"
+  validationConfigurations:
+    mutateDigest: false
+    verifyDigest: false
+    required: true
+  attestors:
+    - name: cert
+      cosign:
+        certificate:
+          # No "cert:" pin here on purpose: the signing cert is extracted from
+          # each image's own signature and checked against this chain, so
+          # the leaf can differ per image without a policy change - the same
+          # shape as a real internal code-signing CA issuing per-service
+          # certs.
+          certChain:
+            value: |
+CERT_CHAIN_PLACEHOLDER
+        ctlog:
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+  validations:
+    - expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.cert])).all(count, count > 0)
+      message: "every container image must carry a signature chaining to the benchmark code-signing CA"
