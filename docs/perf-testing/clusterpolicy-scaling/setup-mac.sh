@@ -44,7 +44,25 @@ EOF
 
 echo "==> Installing Prometheus stack (no grafana/alertmanager to fit host RAM) ..."
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null 2>&1 || true
-helm repo update prometheus-community >/dev/null
+# Retried, because this is a network call inside a script run under `set -e`,
+# and a ladder builds one cluster per version slot per round. A single transient
+# failure here killed an entire multi-slot run at the first slot; the repo was
+# reachable again seconds later. Three tries with a short backoff turns a lost
+# run into a lost few seconds.
+repo_updated=0
+for attempt in 1 2 3; do
+  if helm repo update prometheus-community >/dev/null 2>&1; then
+    repo_updated=1
+    break
+  fi
+  echo "  helm repo update failed (attempt $attempt/3); retrying in $((attempt * 5))s"
+  sleep $((attempt * 5))
+done
+if [[ "$repo_updated" != "1" ]]; then
+  echo "FATAL: could not refresh the prometheus-community chart repo after 3 attempts."
+  echo "       Check network access to https://prometheus-community.github.io/helm-charts"
+  exit 1
+fi
 helm upgrade --install --wait --timeout 15m \
   --namespace monitoring --create-namespace \
   kube-prometheus-stack prometheus-community/kube-prometheus-stack \

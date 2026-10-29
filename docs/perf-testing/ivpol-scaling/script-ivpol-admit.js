@@ -25,7 +25,29 @@ import { Rate } from 'k6/metrics';
 // a cell capped at 102 req/s ran at 134. This executor controls iteration
 // starts directly, which is TARGET_RPS: a fixed measurement input, not a cap
 // derived from a connection budget (pooled TLS connections don't need one).
-export const options = __ENV.TARGET_RPS
+// CONCURRENCY pins how many admissions are in flight at once, rather than how
+// many start per second. It exists because Kyverno 1.18 serializes every image
+// verification on a process-wide mutex (checkOptions holds tufMu for its whole
+// body, opts.go:46), so its effective concurrency is one. Offering it any rate
+// at all builds an unbounded queue, every request passes the 30s webhook
+// deadline, and the resulting "latency" is queue depth rather than work done.
+// Holding concurrency at 1 measures the work, and is the only shape in which
+// 1.18 and 1.19 can be compared honestly.
+//
+// Checked before TARGET_RPS so that setting it wins: a rate and a concurrency
+// cap together describe two different experiments, and silently honouring the
+// rate would give a number labelled as the other one.
+export const options = __ENV.CONCURRENCY
+    ? {
+          scenarios: {
+              serialized: {
+                  executor: 'constant-vus',
+                  vus: parseInt(__ENV.CONCURRENCY, 10),
+                  duration: __ENV.DURATION || '60s',
+              },
+          },
+      }
+    : __ENV.TARGET_RPS
     ? {
           scenarios: {
               paced: {

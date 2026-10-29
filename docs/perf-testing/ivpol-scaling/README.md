@@ -66,7 +66,7 @@ non-pooled mode to force it back.
 
 | Sweep | Cells | The claim it supports |
 |---|---|---|
-| **images per pod** | {1,2,4,8,16} × {0, +25 ms, +100 ms} × {1.19.0, 1.19.1} | Verification cost scales with images per Pod, and 1.19.1 scales worse. The 0 ms lane is the control: with no latency to serialise, the versions should converge. |
+| **images per pod** | {1,2,4,8,16} × {0, +25 ms, +100 ms} × {1.19.0, 1.19.1} | Verification cost scales with images per Pod, and 1.19.1 scales worse. The 0 ms lane is the control for 1.19+: with no injected latency, those versions should converge. 1.18.2 does not, because it pays a Sigstore CDN round trip per image that no delay setting removes - see below. |
 | **cache state** | {off, warm, post-policy-edit} at a fixed shape | What the verification cache is worth, and that editing *any* policy throws it away. |
 | **concurrency ramp** | VUs raised until the webhook times out | Admissions per second before it breaks — the literal "will it scale" number. |
 | **release-over-release** | {1.18.2, 1.19.0, 1.19.1} at a fixed shape | How the feature matured. **Not attributable to any single change** — see below. |
@@ -106,6 +106,10 @@ bash ivpol-ramp-run.sh        # concurrency to saturation            (~0.8 h)
 KYVERNO_VERSION=1.19.1 KYVERNO_CHART=3.9.1 bash ivpol-run.sh
 
 python3 ivpol-report.py results/ladder --baseline 1.19.0
+
+# or, for a version comparison table (shape-aware; refuses to average
+# cells that differ in images, delay, load shape or image digest)
+python3 version-table.py results/ladder
 ```
 
 Add the release-over-release chart by widening the ladder's versions:
@@ -170,6 +174,86 @@ ROUNDS=1 IMAGES="1 8" DELAYS="100" VUS=5 LOAD=20s bash ladder-ivpol-run.sh
 where the effect should be largest — the premise is wrong and the rest of the matrix
 is not worth running. Check that before committing hours to it.
 
+## Keyless is two measurements, not one
+
+"What does keyless cost" conflates two independent things, and the rig measures
+them separately because only one of them can be measured offline.
+
+**Signature format** is the registry question: a legacy `<digest>.sig` tag
+against an OCI 1.1 bundle hung off the image as a referrer. This is fully
+measurable with no Sigstore infrastructure, because Kyverno picks the format by
+probing the registry rather than by looking at the attestor type
+(`verifier.go:39-41`). Both repos are signed with the same key A, so
+`MODE=key` against `MODE=bundle-key` isolates the format and nothing else.
+
+It has to be a **key** attestor, not a certificate one. A certificate attestor
+sets `opts.SigVerifier` only when the policy supplies the leaf `cert:`
+(`opts.go:229-240`); with `certChain` alone it stays nil, and
+`insecureIgnoreTlog` additionally takes `skipSigstoreInfra`, leaving
+`opts.TrustedMaterial` nil too. cosign then refuses before touching the
+registry: "a trusted root is required for identity-based verification"
+(`verify.go:208-210`). So there is no offline cert-plus-bundle cell to be had,
+and the cert-chain cell stays on the legacy format.
+
+**Trust model** is the Sigstore question: a key or certificate against Fulcio
+identities. This one cannot be made offline by configuration.
+`skipSigstoreInfra` is `keyOrCert && ignoreTlog`, and `keyOrCert` requires
+`att.Keyless == nil` (`opts.go:85-87`), so a keyless attestor always runs
+`initTUFAndFetch`. That does two forced TUF refreshes per attestor per
+verification — `forceUpdate=true` bypasses the on-disk cache — inside a single
+process-wide mutex (`pkg/sigstoretuf/sigstoretuf.go`). Setting
+`trustedRoot.value` swaps the material used for verification; it does not
+prevent the fetch. Measuring it therefore needs an in-cluster TUF mirror, which
+is why `policies/ivpol-cosign-keyless.yaml` refuses to render until one exists.
+
+Keeping them apart is what lets the first half be reported now and the second
+half be reported honestly as a code read until its rig is built.
+
+| `MODE` | Policy | Images | Measures |
+|---|---|---|---|
+| `key` | key attestor, legacy `.sig` | `bench/signed` | the original baseline |
+| `cert` | certificate attestor, legacy `.sig` | `bench/signed-cert` | local chain building, offline |
+| `bundle-key` | key attestor, bundle | `bench/signed-bundle` | the bundle format's own cost, same key as `key` |
+| `bundle-combined` / `bundle-split` | two roots, bundle | `bench/signed-bundle` | whether the cache defeat reproduces on bundles |
+| `keyless` | keyless attestor, bundle | `bench/signed-bundle` | the TUF path (needs the mirror) |
+
+`MODE` exists because the policy template, the image repository and the
+expected request signature have to agree. Setting them separately is how a cell
+ends up with a policy whose glob names one repository while the workload uses
+another: nothing matches, every admission is a fast no-op, and the cell reports
+excellent latency.
+
+## The registry serves referrers, and that is a measurement decision
+
+The backend is zot, not distribution. distribution 3.x has no Referrers API
+route at all, so `/v2/<repo>/referrers/<digest>` returns a plain-text 404.
+
+That 404 is survivable. go-containerregistry defaults
+`referrersTagFallback` to true and nothing turns it off, so the client falls
+back to the dist-spec 1.1 referrers tag, and cosign v3 writes that tag. Bundles
+do work on distribution. The reason to run zot anyway is that the fallback
+costs a 404 probe plus a tag fetch where a referrers-capable registry answers
+in one request, and that extra round trip would otherwise be counted as part of
+the code path's cost.
+
+`REGISTRY_FLAVOR=distribution` brings the old backend back, which is how the
+"what does a registry without the Referrers API cost you" cell is run. The
+proxy counts `referrers` and `fallback_tag` separately, so the two are
+distinguishable in any cell's `registry-stats.json`.
+
+**The swap breaks comparability with everything measured before it, including
+every number in the published findings.** Kyverno issues the bundle probe on
+every uncached verification regardless of signature format, so on distribution
+each one cost two delayed round trips (the 404, then the fallback tag) where
+zot costs one. Every per-image request count therefore shifts with the backend,
+on the legacy `.sig` path as much as on the bundle path. Each cell now records
+`registry_flavor` in `meta.txt`, read from the running deployment rather than
+from an environment variable; cells archived before the swap carry no such
+field, and absence means distribution. Do not put a pre-swap and a post-swap
+number in the same table without saying which is which.
+
+See `registry/SOURCE.md` for the probes that establish all of this.
+
 ## Why the registry is in the cluster
 
 Kyverno verifies images by making its own HTTP calls from the admission
@@ -204,6 +288,37 @@ ACTION=stats bash registry/setup-registry.sh     # read counters
 ACTION=delay DELAY_MS=100 bash registry/setup-registry.sh
 ```
 
+## Two things 1.18.2 does that no other version does
+
+Both come from reading the 1.18.2 source, corroborated by behaviour on this
+rig. The CDN round trip is sampled per cell; the serialization is inferred from
+the code and from a goroutine dump showing 33 verifications blocked on one
+mutex. Both must be stated beside any 1.18 number.
+
+**It contacts Sigstore on every verification.** `checkOptions` calls
+`tuf.Initialize` unconditionally, with `forceUpdate=true`, so every image
+verification fetches TUF metadata from `tuf-repo-cdn.sigstore.dev` - even for a
+key attestor with the transparency log ignored. The registry proxy never sees
+this traffic, so no request count includes it. Each cell therefore samples the
+CDN round trip and records `sigstore_cdn_rtt_ms`, `sigstore_cdn_reachable` and
+`tuf_per_verification`. On this rig a sample was about 0.4 s, so a 4-image Pod pays at least ~1.6 s of
+CDN time (a TUF refresh is several requests, not one) that the registry counters do not show. Resist pairing that with a
+1.19.x figure until both come from matched cells: the archived numbers were
+taken at different load shapes, and 1.18.2's histogram mean is per webhook
+invocation rather than per admission, so the two are not the same quantity.
+`version-table.py` prints `rev/iter` and marks such a column `per-inv`. 1.19 added `skipSigstoreInfra`, which skips all of it for
+key and certificate attestors that ignore the log.
+
+**It serializes.** That same call holds a process-wide mutex for the whole of
+`checkOptions`, so cosign verifications run one at a time per process. Offering
+1.18.2 any arrival rate builds an unbounded queue and every request passes the
+30 s webhook deadline, which is latency measuring queue depth rather than work.
+Hence `CONCURRENCY=1`: a `constant-vus` k6 executor pinning one admission in
+flight, applied to **every** version so the comparison is like-for-like. The
+shape is recorded per cell as `load_shape`, and `version-table.py` refuses to
+average cells that disagree on it. Replicas do help, since the mutex is
+per-process, and keyless still serializes on 1.19.
+
 ## Validity gates
 
 A cell that silently stops verifying looks exactly like a fast cell. Every slot
@@ -215,10 +330,14 @@ and cell is gated, and a failure aborts rather than producing a number:
 | **Positive control** — a correctly signed image must be admitted | The opposite failure: a wrong key or unreachable registry makes *everything* fail fast, which passes the negative control and looks like a very quick cell. |
 | **Manifest floor** — at least one manifest fetch per request | Verification short-circuiting. The prefetch runs per request in every cache state, so this holds for warm cells too. |
 | **Manifest coverage** — warns below ~one fetch per image per request | Fewer images really being fetched than the cell claims, which would flatten the N axis for a reason that is not the engine. |
-| **Warm-cache proof** — signature blob fetches must fall after warming | A "warm" cell that is actually cold, which would misattribute the cache's effect. |
+| **Warm-cache evidence** — signature blob fetches per second, warm-up window against measured window | A "warm" cell that is actually cold, which would misattribute the cache's effect. This **warns and records** rather than aborting: the install-time serving probe can itself warm the cache, so on the first cell after an install the rate legitimately does not fall. The numbers land in `warm-cache-evidence.txt`, so a warm claim can be checked rather than assumed. Earlier versions of this table described this as an assertion; no such code existed. |
+| **Signature format** — no `.sig` tag fetches in a cell labelled bundle | A bundle cell silently measuring the legacy path. When no bundle is found Kyverno does not error, it falls back (`verifier.go:40`), so the cell keeps running under a label that no longer describes it. Counting *referrers lookups* cannot catch this: `GetBundles` probes on every uncached verification whatever the image carries, so a legacy cell probes too. The `.sig` tag fetch is the only bucket that reports an outcome. Warm and postedit cells are judged on their warm-up window, because a cache hit issues no verification traffic at all (`impl.go:157-166`). Only applies when `EXPECT_BUNDLE=1`. |
+| **End-of-cell controls** — the positive and negative controls re-run after the measurement | A signing certificate expiring, or a policy being replaced, part-way through a sweep. Both turn every later cell into the failure path, which is faster than verification and reads as an excellent result. Skipped under `ALLOW_FAILURES=1`, where saturation is the point. |
 | **Failure rate** — above 1% aborts the cell | A rejected or timed-out request still completes an iteration, and the failure path is *faster* than verification — so a broken or saturated cell reports better latency than a healthy one. `ALLOW_FAILURES=1` lifts this for the concurrency ramp, where saturation is the point. |
+| **Verification coverage** — referrers probes must reach 95% of iterations x images | Admissions that completed without verifying. The manifest-coverage figure cannot see this: its denominator assumes about one manifest per image, so it reads a few hundred percent and passes regardless. Cache-off cells only. |
+| **Legacy-format floor** — a cell labelled legacy must show `.sig` fetches near the same 95% floor | The converse of the bundle gate: a key cell that silently verified bundles instead. |
 | **Restart check** — recorded per cell, flagged by the report | A pod restart mid-cell empties the webhook Service; with `failurePolicy: Fail` those requests fail and the latency is meaningless. |
-| **Even rounds** — the report refuses to compare unequal round counts | A version measured in two rounds against one measured in three is not a comparison. |
+| **Even rounds** — the report *warns* when round counts differ | A version measured in two rounds against one measured in three is not a comparison. This is a warning in `ivpol-report.py`, not a refusal; read it before trusting an uneven table. |
 
 ## Things to know before reading a chart
 

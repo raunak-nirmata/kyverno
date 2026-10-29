@@ -46,12 +46,20 @@ spec:
   matchImageReferences:
     - glob: "registry.bench-registry.svc.cluster.local:5000/bench/signed:*"
   validationConfigurations:
-    # Digest mutation and the digest requirement are both off. Each would add
-    # work that is not signature verification, and the sweep is measuring the
-    # per-image fetch-and-verify path, not digest rewriting.
+    # Digest mutation and digest verification stay off: each would add work
+    # that is not signature verification, and the sweep measures the per-image
+    # fetch-and-verify path, not digest rewriting.
+    #
+    # required is ON, and that is a measurement decision rather than a policy
+    # preference. With it off, Kyverno 1.18.2 silently skipped verification for
+    # about 15% of admissions - measured, same cell, same rig: 161 of 189
+    # images verified at required:false, 116 of 116 at required:true, with no
+    # denials either way. 1.19.1 verified 100% regardless. An admission that
+    # skipped verification still completes, and completes faster, so leaving
+    # this off biases exactly the number the benchmark exists to report.
     mutateDigest: false
     verifyDigest: false
-    required: false
+    required: true
   attestors:
     - name: cosign
       cosign:

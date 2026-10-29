@@ -57,7 +57,7 @@ spec:
   validationConfigurations:
     mutateDigest: false
     verifyDigest: false
-    required: false
+    required: true
   attestors:
     - name: cert
       cosign:

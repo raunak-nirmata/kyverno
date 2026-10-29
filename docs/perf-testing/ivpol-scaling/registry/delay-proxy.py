@@ -60,6 +60,13 @@ _tls_ctx.load_cert_chain(TLS_CERT, TLS_KEY)
 
 # Request lines, so a chunk carrying a blob body is not miscounted as a request.
 REQUEST_LINE = re.compile(rb"(?:^|\r\n)(GET|HEAD|POST|PUT|PATCH|DELETE) ([^ ]+) HTTP/")
+# The OCI dist-spec 1.1 referrers tag schema: /manifests/sha256-<64 hex>.
+# Distinct from an ordinary manifest fetch by tag or by sha256:<hex> digest.
+FALLBACK_TAG = re.compile(r"/manifests/sha256-[0-9a-f]{64}$")
+# cosign's legacy signature tag: /manifests/sha256-<64 hex>.sig. This is the
+# one bucket that reports an *outcome* rather than an attempt, which is why the
+# bundle gate keys on it - see classify().
+SIG_TAG = re.compile(r"/manifests/sha256-[0-9a-f]{64}\.sig$")
 
 counts: Counter = Counter()
 started = asyncio.get_event_loop_policy().new_event_loop().time()
@@ -71,8 +78,28 @@ def classify(path: bytes) -> str:
     Manifest fetches are what the per-image prefetch loop does; blob fetches are
     signature and attestation payloads. Counting them separately tells a
     cache-hit cell from a cache-miss one without reading Kyverno's logs.
+
+    `referrers` and `fallback_tag` count the bundle *probe*, which Kyverno
+    issues on every uncached verification regardless of what the image actually
+    carries: buildCheckOptsWithBundleDetection calls GetBundles unconditionally
+    (verifier.go:39) and only then decides the format. So neither bucket
+    distinguishes "this image has a bundle" from "we looked and found none" -
+    a legacy .sig cell probes too. The gap between them is still useful: it is
+    exactly the extra round trip a registry without the Referrers API costs.
+
+    `sig_tag` is the bucket that reports an outcome. Only the legacy path
+    fetches sha256-<hex>.sig, so its presence proves which format was actually
+    verified, and its absence under a bundle label proves the bundle was found.
     """
     text = path.decode("latin-1", "replace")
+    if "/referrers/" in text:
+        return "referrers"
+    # Before FALLBACK_TAG: both match /manifests/sha256-<hex>, and only the
+    # anchored .sig suffix separates them.
+    if SIG_TAG.search(text):
+        return "sig_tag"
+    if FALLBACK_TAG.search(text):
+        return "fallback_tag"
     if "/manifests/" in text:
         return "manifest"
     if "/blobs/" in text:

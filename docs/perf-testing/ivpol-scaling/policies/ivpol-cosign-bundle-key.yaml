@@ -1,0 +1,68 @@
+# Bundle-format (OCI 1.1 referrer) ImageValidatingPolicy for the ivpol
+# benchmark. This is the signature-format half of the keyless question.
+#
+# WHAT THIS IS AND IS NOT. The attestor is cosign.key, identical to
+# ivpol-cosign-key.yaml, and the images in bench/signed-bundle are signed with
+# the same key A as bench/signed. The only thing that differs between the two
+# repos is the format the signature is stored in: a bundle hung off the image
+# as an OCI referrer, rather than a legacy <digest>.sig tag. So MODE=key
+# against MODE=bundle-key isolates the format and nothing else, which is what
+# gives the talk its R for the bundle path.
+#
+# This is NOT keyless. It does no Fulcio identity checking and contacts no
+# Sigstore infrastructure. See ivpol-cosign-keyless.yaml for that half.
+#
+# WHY A KEY AND NOT A CERTIFICATE CHAIN. A certificate attestor cannot verify
+# a bundle offline. checkOptions sets opts.SigVerifier from a certificate only
+# when the policy supplies the leaf `cert:` (opts.go:229-240); with certChain
+# alone it stays nil. A certificate attestor with insecureIgnoreTlog also takes
+# skipSigstoreInfra, so opts.TrustedMaterial is nil too (opts.go:116-146).
+# cosign then refuses before any registry work: "a trusted root is required for
+# identity-based verification" (verify.go:208-210). A key attestor sets
+# SigVerifier (opts.go:215) and still takes the offline fast path, so it is the
+# only attestor that measures the bundle format without Sigstore in the way.
+#
+# Bundle detection itself is independent of attestor type: Kyverno probes the
+# registry with GetBundles and switches format on what it finds
+# (verifier.go:39-41), so a key attestor reads a bundle perfectly well.
+#
+# Images: registry/setup-registry.sh signs bench/signed-bundle with cosign v3
+# in --registry-referrers-mode=oci-1-1 using key A, plus an unsigned-control
+# tag carrying no signature at all.
+apiVersion: policies.kyverno.io/v1beta1
+kind: ImageValidatingPolicy
+metadata:
+  name: ivpol-bench-cosign-bundle-key
+spec:
+  webhookConfiguration:
+    timeoutSeconds: 30
+  failurePolicy: Fail
+  validationActions:
+    - Deny
+  evaluation:
+    mode: Kubernetes
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  matchImageReferences:
+    - glob: "registry.bench-registry.svc.cluster.local:5000/bench/signed-bundle:*"
+  validationConfigurations:
+    mutateDigest: false
+    verifyDigest: false
+    required: true
+  attestors:
+    - name: bundlekey
+      cosign:
+        key:
+          data: |
+KEY_A_PLACEHOLDER
+        ctlog:
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+  validations:
+    - expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.bundlekey])).all(count, count > 0)
+      message: "every container image must carry a valid bundle signature from key A"

@@ -1,22 +1,39 @@
-# Keyless cosign ImageValidatingPolicy — the "what does Sigstore cost" cell.
+# Keyless ImageValidatingPolicy — the trust-model half of the keyless question.
 #
-# This is NOT the default. Every other cell uses the key-based policy so that
-# registry latency is the only injected network cost and the benchmark does not
-# depend on a public service. This one deliberately puts Fulcio and Rekor back
-# on the admission path, because that is what a lot of production setups
-# actually run, and the difference between the two is a number worth having.
+# NOT RUNNABLE UNTIL THE IN-CLUSTER TUF MIRROR EXISTS. render_policy refuses
+# this template while $KEY_DIR/trusted_root.json, tuf-root.json and
+# fulcio-ca.crt are missing, which is deliberate: the previous version of this
+# file pointed at ghcr.io/kyverno/test-images and rekor.sigstore.dev, so any
+# number it produced included a public service nobody in the room controls.
 #
-# Two consequences to state on any slide built from this policy:
+# WHY KEYLESS CANNOT BE MADE OFFLINE BY POLICY CONFIGURATION. checkOptions
+# computes skipSigstoreInfra as keyOrCert && ignoreTlog, where keyOrCert is
+# att.Keyless == nil && (att.Key != nil || att.Certificate != nil)
+# (pkg/image/verifiers/ivpol/cosign/opts.go:85-87). A keyless attestor fails
+# that test by construction, so initTUFAndFetch runs on every check no matter
+# what ctlog.insecureIgnoreTlog, insecureIgnoreSCT or trustedRoot.value are set
+# to. trustedRoot.value substitutes the material used for verification
+# (opts.go:628-640); it does not prevent the fetch.
 #
-#   - The numbers include round trips to services nobody in the room controls.
-#     A bad day at rekor.sigstore.dev shows up here as a Kyverno regression if
-#     you are not careful. Run this cell close in time to its key-based
-#     counterpart and report them together.
-#   - It cannot use the benchmark registry's locally signed images, which carry
-#     no transparency-log entry. It points at a public image that does.
+# What that fetch costs, from the code rather than from a measurement:
+#   - tuf.Initialize is called with forceUpdate=true, so the on-disk cache at
+#     $TUF_ROOT is bypassed every time (sigstore pkg/tuf/client.go:245-253).
+#     Pre-seeding the cache does not help.
+#   - getTrustedRootFromTUF uses DefaultOptions, where CacheValidity is 0 and
+#     ForceCache is false, so it refreshes again (sigstore-go tuf/client.go).
+#   - Both run inside sigstoretuf.WithLock, a single process-wide, non-reentrant
+#     sync.Mutex shared by ivpol, cpol and the CLI bootstrap
+#     (pkg/sigstoretuf/sigstoretuf.go).
 #
-# Not part of the committed scope for the talk; run it if the keyless-vs-key
-# comparison earns a slide.
+# So: two forced TUF refreshes per attestor per verification, serialized across
+# the whole process. That does not show up in single-Pod latency and does show
+# up in admissions per second, which is why the keyless throughput ramp is the
+# measurement this policy exists for.
+#
+# The identities below are the local CA's, not GitHub's. This rig has no
+# GitHub Enterprise Cloud organisation, so the private-Sigstore root is
+# simulated by a local Fulcio-equivalent CA. Any slide built from this policy
+# must say so: the shape of the cost is real, the issuer is not GitHub's.
 apiVersion: policies.kyverno.io/v1beta1
 kind: ImageValidatingPolicy
 metadata:
@@ -36,22 +53,40 @@ spec:
         operations: ["CREATE"]
         resources: ["pods"]
   matchImageReferences:
-    - glob: "ghcr.io/kyverno/test-images/cosign:*"
+    # bench/signed-keyless, not bench/signed-bundle: the bundle set is signed
+    # by the local code-signing CA, whose leaves carry no OIDC issuer or
+    # subject extension and so can never satisfy the identities below. This
+    # repository does not exist yet; it is created with the Fulcio-equivalent
+    # CA alongside the TUF mirror.
+    - glob: "registry.bench-registry.svc.cluster.local:5000/bench/signed-keyless:*"
   validationConfigurations:
     mutateDigest: false
     verifyDigest: false
-    required: false
+    required: true
   attestors:
-    - name: cosign
+    - name: keyless
       cosign:
         keyless:
           identities:
-            - issuer: https://token.actions.githubusercontent.com
-              subject: https://github.com/kyverno/test-images/.github/workflows/cosign.yml@refs/heads/main
+            - issuer: https://fulcio.bench-registry.svc.cluster.local
+              subject: bench-signer@ivpol.local
+          roots: |
+FULCIO_ROOTS_PLACEHOLDER
+        tuf:
+          # Must be the in-cluster mirror. render_policy FATALs on any mirror
+          # containing sigstore.dev, because that would put someone else's
+          # network inside the measurement.
+          mirror: http://tuf.bench-registry.svc.cluster.local:8080
+          root:
+            data: |
+TUF_ROOT_PLACEHOLDER
+        trustedRoot:
+          value: |
+TRUSTED_ROOT_PLACEHOLDER
         ctlog:
-          url: https://rekor.sigstore.dev
+          insecureIgnoreTlog: true
           insecureIgnoreSCT: true
   validations:
     - expression: >-
-        images.containers.map(image, verifyImageSignatures(image, [attestors.cosign])).all(count, count > 0)
-      message: "every container image must carry a valid keyless cosign signature"
+        images.containers.map(image, verifyImageSignatures(image, [attestors.keyless])).all(count, count > 0)
+      message: "every container image must carry a valid keyless signature from the benchmark Fulcio root"

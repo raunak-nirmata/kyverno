@@ -27,7 +27,9 @@ SIBLING="$HERE/../clusterpolicy-scaling"
 # that is what someone deploying today would run.
 KYVERNO_VERSION="${KYVERNO_VERSION:-1.19.1}"
 KYVERNO_CHART="${KYVERNO_CHART:-3.9.1}"
-STEPS="${STEPS:-50 100 200 400 800}"
+# Concurrency levels, passed as CONCURRENCY: VUS alone sets no k6 executor and
+# the run would collapse to a single iteration per step.
+STEPS="${STEPS:-1 2 4 8 16 32}"
 ROUNDS="${ROUNDS:-2}"
 COOLDOWN="${COOLDOWN:-300}"
 KIND_IMAGE="${KIND_IMAGE:-kindest/node:v1.31.6}"
@@ -79,7 +81,7 @@ for r in $(seq 1 "$ROUNDS"); do
 
     KYVERNO_VERSION="$KYVERNO_VERSION" KYVERNO_CHART="$KYVERNO_CHART" \
     IMAGES="$IMAGES" DELAYS="$DELAYS" CACHE_MODE="$CACHE_MODE" \
-    VUS="$vus" LOAD="$LOAD" CELL_COOLDOWN="$CELL_COOLDOWN" \
+    CONCURRENCY="$vus" LOAD="$LOAD" CELL_COOLDOWN="$CELL_COOLDOWN" \
     SKIP_INSTALL="$skip" ALLOW_FAILURES=1 \
     RESULTS_DIR="$step_dir" \
       bash "$HERE/ivpol-run.sh" >>"$LOG" 2>&1

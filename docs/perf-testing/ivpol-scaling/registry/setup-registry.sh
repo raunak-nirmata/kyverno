@@ -22,6 +22,14 @@
 #   ACTION=reset bash setup-registry.sh               # zero the counters
 #   ACTION=delete bash setup-registry.sh
 #
+# REGISTRY_FLAVOR=zot (default) runs a referrers-capable backend; =distribution
+# runs the old one, whose referrers endpoint 404s, for the cell that prices what
+# that costs. See registry/SOURCE.md.
+#
+# BUNDLE_SETS=1 (default) additionally builds two OCI 1.1 bundle-signed sets
+# ($REPO_BUNDLE, $REPO_BUNDLE_B) with cosign v3 at COSIGN3_BIN, for the
+# keyless/bundle cells. =0 skips them and the v3 requirement.
+#
 # EXTRA_ATTESTORS=1 (default) additionally builds: a second key-signed image
 # set ($REPO_B, key B) for the multi-attestor cache-defeat cells, a third key
 # (cosign-c, unused by any image here) for the per-attestor-count cost cells,
@@ -40,6 +48,15 @@ REPO="${REPO:-bench/signed}"
 REPO_B="${REPO_B:-bench/signed-b}"
 REPO_CERT="${REPO_CERT:-bench/signed-cert}"
 EXTRA_ATTESTORS="${EXTRA_ATTESTORS:-1}"
+# Bundle-format (OCI 1.1 referrer) sets, for the keyless/bundle cells. Signed
+# with the same keys A and B as $REPO and $REPO_B, so the only variable between
+# $REPO and $REPO_BUNDLE is the signature format - which is the whole point of
+# the comparison. Key-signed rather than cert-signed because a certificate
+# attestor cannot verify a bundle offline at all; see sign_bundle_image_set.
+# BUNDLE_SETS=0 skips them and the cosign v3 requirement with them.
+REPO_BUNDLE="${REPO_BUNDLE:-bench/signed-bundle}"
+REPO_BUNDLE_B="${REPO_BUNDLE_B:-bench/signed-bundle-b}"
+BUNDLE_SETS="${BUNDLE_SETS:-1}"
 # What Kyverno resolves. Must match the policy's matchImageReferences glob.
 IN_CLUSTER_HOST="${IN_CLUSTER_HOST:-registry.${NS}.svc.cluster.local:5000}"
 # Host-side port-forward used only to push and sign. The registry host differs
@@ -48,13 +65,27 @@ IN_CLUSTER_HOST="${IN_CLUSTER_HOST:-registry.${NS}.svc.cluster.local:5000}"
 # pushed through the forward is the one Kyverno finds in cluster.
 PUSH_PORT="${PUSH_PORT:-5999}"
 KEY_DIR="${KEY_DIR:-$HERE/keys}"
-# distribution 3.x. Tried first as a fix for the signature-format problem
-# described under COSIGN_BIN, on the theory that its Referrers API would let
-# Kyverno find cosign v3's bundles - it did not, the referrers endpoint 404s
-# here either way, and signing with cosign v2 is what actually fixed it. Kept at
-# 3 only because it is the current release; 2 works identically for this
-# benchmark.
-REGISTRY_IMAGE="${REGISTRY_IMAGE:-registry:3}"
+# zot, not distribution. distribution 3.x has no Referrers API route at all -
+# it is unmerged PR #4828, milestone 3.2.0 - so /v2/<repo>/referrers/<digest>
+# returns a plain-text "404 page not found" there.
+#
+# That 404 is survivable: go-containerregistry defaults referrersTagFallback to
+# true and nothing in Kyverno, the SDK or cosign turns it off, so a client falls
+# back to the dist-spec 1.1 referrers tag (sha256-<hex>), and cosign v3 writes
+# that tag. Bundles therefore work on distribution. See registry/SOURCE.md for
+# the probe that establishes both halves of that.
+#
+# The reason to run zot anyway is measurement, not capability: the fallback
+# costs a 404 probe plus a tag GET where a referrers-capable registry answers in
+# one request, and that extra round trip would be counted as part of the code
+# path's cost. REGISTRY_FLAVOR=distribution brings the old backend back, which
+# is how the "what does a registry without the Referrers API cost" cell is run.
+REGISTRY_FLAVOR="${REGISTRY_FLAVOR:-zot}"
+case "$REGISTRY_FLAVOR" in
+  zot)          REGISTRY_IMAGE="${REGISTRY_IMAGE:-ghcr.io/project-zot/zot-minimal:latest}" ;;
+  distribution) REGISTRY_IMAGE="${REGISTRY_IMAGE:-registry:3}" ;;
+  *) echo "FATAL: REGISTRY_FLAVOR must be zot or distribution, got '$REGISTRY_FLAVOR'"; exit 1 ;;
+esac
 PROXY_IMAGE="${PROXY_IMAGE:-python:3.12-alpine}"
 # Optional: the kind cluster to side-load the rig's images into. Every slot in a
 # ladder is a fresh cluster, so without this each one pulls the same two images
@@ -70,13 +101,15 @@ KIND_CLUSTER="${KIND_CLUSTER:-}"
 # here, not the fallback.
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-900s}"
 export COSIGN_PASSWORD="${COSIGN_PASSWORD:-}"
-# cosign v2, not v3. v3 writes signatures only in the OCI 1.1 bundle form, and
-# Kyverno decides which form to read by calling cosign.GetBundles, which needs
-# the registry's Referrers API - distribution does not serve it here, so
-# GetBundles finds nothing and Kyverno falls back to the legacy <digest>.sig tag
-# that v3 never wrote. v2 writes that tag, which the fallback path reads.
+# cosign v2 writes the legacy <digest>.sig tag; v3 writes only the OCI 1.1
+# bundle form. Both formats are now measured, so both binaries are kept and
+# each image set is signed with the one matching the format it exists to test.
 # Install: go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.3
 COSIGN_BIN="${COSIGN_BIN:-$HOME/go/bin/cosign}"
+# cosign v3, kept in its own GOBIN so installing it does not overwrite the v2
+# binary above. Used only for the bundle-format sets.
+# Install: GOBIN=$HOME/go/bin/cosign3 go install github.com/sigstore/cosign/v3/cmd/cosign@v3.1.3
+COSIGN3_BIN="${COSIGN3_BIN:-$HOME/go/bin/cosign3/cosign}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing required command: $1"; exit 1; }; }
 
@@ -120,16 +153,35 @@ need kubectl
 need crane
 need openssl
 [[ -x "$COSIGN_BIN" ]] || { echo "missing cosign at $COSIGN_BIN"; echo "  install: go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.3"; exit 1; }
-# Fail now, with an explanation, rather than after signing 16 images that
-# Kyverno will not be able to read.
+# Two cosign binaries, one per signature format, because the format is the
+# variable under test and each version writes only one of them.
+#
+# COSIGN_BIN must be v2: it writes the legacy <digest>.sig tag that every
+# key-based and cert-chain cell measures. A v3 binary here would silently write
+# bundles instead and those cells would stop measuring what they claim to.
 cosign_major=$("$COSIGN_BIN" version 2>/dev/null | awk '/GitVersion/{gsub(/v/,"",$2); split($2,a,"."); print a[1]}')
 if [[ "${cosign_major:-0}" -ge 3 ]]; then
-  echo "FATAL: $COSIGN_BIN is cosign v${cosign_major}, which writes signatures only in the"
-  echo "       OCI 1.1 bundle form. Kyverno reads those only when the registry serves the"
-  echo "       Referrers API, which this one does not, so every verification would fail"
-  echo "       with 'no signatures found'. Install v2 and point COSIGN_BIN at it:"
+  echo "FATAL: COSIGN_BIN ($COSIGN_BIN) is cosign v${cosign_major}, but the legacy-signature"
+  echo "       image sets need v2, which writes the <digest>.sig tag they are built around."
+  echo "       Install v2 and point COSIGN_BIN at it:"
   echo "         go install github.com/sigstore/cosign/v2/cmd/cosign@v2.4.3"
+  echo "       Bundle sets use COSIGN3_BIN instead; the two coexist."
   exit 1
+fi
+
+# COSIGN3_BIN must be v3, and is required only when building bundle sets.
+if [[ "$BUNDLE_SETS" == "1" ]]; then
+  [[ -x "$COSIGN3_BIN" ]] || {
+    echo "FATAL: BUNDLE_SETS=1 needs cosign v3 at COSIGN3_BIN ($COSIGN3_BIN)."
+    echo "  install: GOBIN=\$HOME/go/bin/cosign3 go install github.com/sigstore/cosign/v3/cmd/cosign@v3.1.3"
+    echo "  or set BUNDLE_SETS=0 to skip the bundle-format image sets."
+    exit 1; }
+  cosign3_major=$("$COSIGN3_BIN" version 2>/dev/null | awk '/GitVersion/{gsub(/v/,"",$2); split($2,a,"."); print a[1]}')
+  if [[ "${cosign3_major:-0}" -lt 3 ]]; then
+    echo "FATAL: COSIGN3_BIN ($COSIGN3_BIN) is cosign v${cosign3_major:-?}, not v3. Only v3"
+    echo "       writes the OCI 1.1 bundle form the keyless/bundle cells measure."
+    exit 1
+  fi
 fi
 
 echo "==> namespace $NS"
@@ -180,6 +232,22 @@ kubectl -n "$NS" create secret generic registry-tls \
   --from-file=tls.key="$KEY_DIR/server.key" \
   --from-file=ca.crt="$KEY_DIR/ca.crt" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+# Restart the proxy if it is already running, because the Secret just changed
+# and nothing else would make it re-read the mount in time.
+#
+# Without this, re-running the script against a live cluster leaves the proxy
+# serving the previous certificate while Kyverno is handed the new CA bundle,
+# so every verification fails with "x509: certificate signed by unknown
+# authority". The kubelet does eventually refresh a Secret mount, but on its
+# own schedule, which is far longer than the gap before the first cell starts.
+# This cost a measured cell to a positive-control failure that looked like a
+# policy bug.
+if kubectl -n "$NS" get deploy registry-proxy >/dev/null 2>&1; then
+  echo "  registry-proxy already running; restarting it to pick up the new certificate"
+  kubectl -n "$NS" rollout restart deploy/registry-proxy >/dev/null
+  kubectl -n "$NS" rollout status deploy/registry-proxy --timeout="$ROLLOUT_TIMEOUT"
+fi
 
 if [[ "$EXTRA_ATTESTORS" == "1" ]]; then
 echo "==> code-signing CA + leaf certificates (Task C: offline cert-chain attestor)"
@@ -263,6 +331,37 @@ if [[ -n "$KIND_CLUSTER" ]] && command -v kind >/dev/null 2>&1 && command -v doc
   done
 fi
 
+echo "==> registry backend config ($REGISTRY_FLAVOR)"
+# zot is configured by a file, distribution by environment. Both end up serving
+# plaintext HTTP on 5000; the TLS termination is the proxy's job either way, so
+# nothing downstream of here cares which backend is running.
+if [[ "$REGISTRY_FLAVOR" == "zot" ]]; then
+  kubectl -n "$NS" create configmap registry-zot-config \
+    --from-literal=config.json='{
+  "distSpecVersion": "1.1.0",
+  "storage": { "rootDirectory": "/var/lib/registry", "dedupe": false },
+  "http": { "address": "0.0.0.0", "port": "5000" },
+  "log": { "level": "error" }
+}' --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  # dedupe off on purpose: with it on, zot hard-links identical blobs across
+  # repos, and the benchmark deliberately salts each repo's layer so that two
+  # repos sharing a tag number do not share a blob. Dedupe would quietly undo
+  # that and make per-repo blob fetch counts share state.
+  REGISTRY_CONTAINER_SPEC='          args: ["serve", "/etc/zot/config.json"]
+          volumeMounts:
+            - { name: zot-config, mountPath: /etc/zot }
+            - { name: storage, mountPath: /var/lib/registry }'
+  REGISTRY_VOLUMES='      volumes:
+        - name: zot-config
+          configMap: { name: registry-zot-config }
+        - name: storage
+          emptyDir: {}'
+else
+  REGISTRY_CONTAINER_SPEC='          env:
+            - { name: REGISTRY_STORAGE_DELETE_ENABLED, value: "true" }'
+  REGISTRY_VOLUMES='      volumes: []'
+fi
+
 echo "==> registry + proxy"
 kubectl -n "$NS" apply -f - <<YAML >/dev/null
 apiVersion: apps/v1
@@ -287,10 +386,10 @@ spec:
         - name: registry
           image: $REGISTRY_IMAGE
           ports: [ { containerPort: 5000 } ]
-          env:
-            - { name: REGISTRY_STORAGE_DELETE_ENABLED, value: "true" }
+$REGISTRY_CONTAINER_SPEC
           resources:
             requests: { cpu: 100m, memory: 128Mi }
+$REGISTRY_VOLUMES
 ---
 apiVersion: v1
 kind: Service
@@ -487,7 +586,7 @@ sign_key_image_set() {
     tag="v$i"
     printf 'ivpol-benchmark image %s (%s)\n' "$i" "$repo" > "$BUILD/marker"
     ( cd "$BUILD" && tar cf layer.tar marker )
-    crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$repo:$tag" --insecure >/dev/null 2>&1 \
+    crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$repo:$tag" --insecure --oci-empty-base >/dev/null 2>&1 \
       || { echo "FATAL: crane could not push $repo:$tag"; exit 1; }
     # --use-signing-config=false is required with cosign v3: --tlog-upload=false
     # alone is refused, because a default signing config naming a transparency log
@@ -506,7 +605,7 @@ sign_key_image_set() {
   # all - a gate that passes on a completely broken policy.
   printf 'ivpol-benchmark unsigned control (%s)\n' "$repo" > "$BUILD/marker"
   ( cd "$BUILD" && tar cf layer.tar marker )
-  crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$repo:unsigned-control" --insecure >/dev/null 2>&1 \
+  crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$repo:unsigned-control" --insecure --oci-empty-base >/dev/null 2>&1 \
     || { echo "FATAL: could not push the unsigned control image for $repo"; exit 1; }
   echo "  pushed $repo:unsigned-control (deliberately unsigned)"
 }
@@ -520,7 +619,7 @@ sign_cert_image_set() {
     tag="v$i"
     printf 'ivpol-benchmark image %s (%s)\n' "$i" "$repo" > "$BUILD/marker"
     ( cd "$BUILD" && tar cf layer.tar marker )
-    crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$repo:$tag" --insecure >/dev/null 2>&1 \
+    crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$repo:$tag" --insecure --oci-empty-base >/dev/null 2>&1 \
       || { echo "FATAL: crane could not push $repo:$tag"; exit 1; }
     "$COSIGN_BIN" sign --yes --tlog-upload=false --allow-insecure-registry \
       --key "$keyfile" --cert "$certfile" --cert-chain "$chainfile" \
@@ -531,7 +630,60 @@ sign_cert_image_set() {
   echo
   printf 'ivpol-benchmark unsigned control (%s)\n' "$repo" > "$BUILD/marker"
   ( cd "$BUILD" && tar cf layer.tar marker )
-  crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$repo:unsigned-control" --insecure >/dev/null 2>&1 \
+  crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$repo:unsigned-control" --insecure --oci-empty-base >/dev/null 2>&1 \
+    || { echo "FATAL: could not push the unsigned control image for $repo"; exit 1; }
+  echo "  pushed $repo:unsigned-control (deliberately unsigned)"
+}
+
+# Bundle-format (OCI 1.1 referrer) equivalent of sign_key_image_set. Key-based,
+# deliberately, and not cert-chain based.
+#
+# A certificate attestor cannot verify a bundle offline, so a cert-signed bundle
+# set would be unmeasurable. checkOptions only sets opts.SigVerifier from a
+# certificate when the policy supplies the leaf `cert:` (opts.go:229-240); with
+# certChain alone it stays nil. And a certificate attestor with
+# insecureIgnoreTlog takes skipSigstoreInfra, which leaves opts.TrustedMaterial
+# nil too (opts.go:116-146). cosign then refuses outright: "a trusted root is
+# required for identity-based verification" (cosign verify.go:208-210). The
+# cosign CLI says the same thing in its own words - "certificate chain must be
+# in bundle and may not be provided using --certificate-chain when using
+# --new-bundle-format".
+#
+# A key attestor sets SigVerifier from the public key (opts.go:215) and still
+# takes the offline fast path, so key-plus-bundle verifies with no Sigstore
+# infrastructure at all. Proven on this rig before the sets were wired in; see
+# registry/SOURCE.md.
+#
+# This also makes the comparison cleaner than the cert version would have been:
+# $REPO and $REPO_BUNDLE now differ in signature format and nothing else, same
+# key, same images, so a key/.sig cell against a key/bundle cell isolates the
+# format exactly.
+#
+# COSIGN_EXPERIMENTAL=1 is mandatory: without it cosign v3 refuses
+# --registry-referrers-mode=oci-1-1 outright. --use-signing-config=false is the
+# v3 equivalent of "there is no Rekor here"; --tlog-upload=false alone is
+# refused when a default signing config naming a transparency log is in play.
+sign_bundle_image_set() {
+  local repo="$1" keyfile="$2"
+  local i tag
+  for i in $(seq 1 "$IMAGE_COUNT"); do
+    tag="v$i"
+    printf 'ivpol-benchmark image %s (%s)\n' "$i" "$repo" > "$BUILD/marker"
+    ( cd "$BUILD" && tar cf layer.tar marker )
+    crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$repo:$tag" --insecure --oci-empty-base >/dev/null 2>&1 \
+      || { echo "FATAL: crane could not push $repo:$tag"; exit 1; }
+    COSIGN_EXPERIMENTAL=1 "$COSIGN3_BIN" sign --yes --tlog-upload=false \
+      --use-signing-config=false --allow-insecure-registry \
+      --registry-referrers-mode=oci-1-1 --new-bundle-format=true \
+      --key "$keyfile" \
+      "127.0.0.1:$PUSH_PORT/$repo:$tag" >/dev/null 2>&1 \
+      || { echo "FATAL: cosign v3 could not bundle-sign $repo:$tag"; exit 1; }
+    printf '  bundle-signed %s:%s\r' "$repo" "$tag"
+  done
+  echo
+  printf 'ivpol-benchmark unsigned control (%s)\n' "$repo" > "$BUILD/marker"
+  ( cd "$BUILD" && tar cf layer.tar marker )
+  crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$repo:unsigned-control" --insecure --oci-empty-base >/dev/null 2>&1 \
     || { echo "FATAL: could not push the unsigned control image for $repo"; exit 1; }
   echo "  pushed $repo:unsigned-control (deliberately unsigned)"
 }
@@ -549,7 +701,7 @@ if [[ "$EXTRA_ATTESTORS" == "1" ]]; then
   # negative case for this attestor.
   printf 'ivpol-benchmark wrong-ca control (%s)\n' "$REPO_CERT" > "$BUILD/marker"
   ( cd "$BUILD" && tar cf layer.tar marker )
-  crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$REPO_CERT:wrong-ca-control" --insecure >/dev/null 2>&1 \
+  crane append -f "$BUILD/layer.tar" -t "127.0.0.1:$PUSH_PORT/$REPO_CERT:wrong-ca-control" --insecure --oci-empty-base >/dev/null 2>&1 \
     || { echo "FATAL: could not push wrong-ca-control"; exit 1; }
   "$COSIGN_BIN" sign --yes --tlog-upload=false --allow-insecure-registry \
     --key "$KEY_DIR/codesign-leaf-wrongca-cosign.key" \
@@ -581,6 +733,46 @@ if [[ "$EXTRA_ATTESTORS" == "1" ]]; then
            echo "       cells need every image to carry all three signatures."; exit 1; }
   done
   echo "all-keys check OK: $REPO_ALL:v1 verifies against keys A, B, and C independently"
+fi
+
+if [[ "$BUNDLE_SETS" == "1" ]]; then
+  echo "==> bundle-format image sets (cosign v3, OCI 1.1 referrers, key-signed)"
+  # Key A, the same key $REPO is signed with, so the only difference between
+  # the two repos is the signature format.
+  sign_bundle_image_set "$REPO_BUNDLE" "$KEY_DIR/cosign.key"
+  # Key B, for the mixed-trust-root bundle cells.
+  sign_bundle_image_set "$REPO_BUNDLE_B" "$KEY_DIR/cosign-b.key"
+
+  echo "==> verifying the bundle sets read back, and that the two keys are distinct"
+  COSIGN_EXPERIMENTAL=1 "$COSIGN3_BIN" verify --new-bundle-format=true \
+    --key "$KEY_DIR/cosign.pub" \
+    --insecure-ignore-tlog=true --insecure-ignore-sct=true --allow-insecure-registry \
+    "127.0.0.1:$PUSH_PORT/$REPO_BUNDLE:v1" >/dev/null 2>&1 \
+    || { echo "FATAL: the bundle signature does not verify against key A. Every bundle"
+         echo "       cell would measure a failing policy, which looks fast."; exit 1; }
+  if COSIGN_EXPERIMENTAL=1 "$COSIGN3_BIN" verify --new-bundle-format=true \
+      --key "$KEY_DIR/cosign.pub" \
+      --insecure-ignore-tlog=true --insecure-ignore-sct=true --allow-insecure-registry \
+      "127.0.0.1:$PUSH_PORT/$REPO_BUNDLE_B:v1" >/dev/null 2>&1; then
+    echo "FATAL: key A verified a bundle signed only by key B — the two keys are not"
+    echo "       distinct, and every mixed-trust-root bundle cell would be unmeasurable."
+    exit 1
+  fi
+  echo "cross-key check OK: key A cannot verify a key-B-only bundle"
+
+  # Proves the signature really is a referrer and not a legacy .sig tag, which
+  # is the one thing that distinguishes these sets from the cert-chain set.
+  bundle_digest=$(crane digest --insecure "127.0.0.1:$PUSH_PORT/$REPO_BUNDLE:v1" 2>/dev/null)
+  fallback_tag="${bundle_digest/:/-}"
+  if ! curl -sf "http://127.0.0.1:$PUSH_PORT/v2/$REPO_BUNDLE/referrers/$bundle_digest" >/dev/null 2>&1 \
+     && ! curl -sf -H 'Accept: application/vnd.oci.image.index.v1+json' \
+          "http://127.0.0.1:$PUSH_PORT/v2/$REPO_BUNDLE/manifests/$fallback_tag" >/dev/null 2>&1; then
+    echo "FATAL: $REPO_BUNDLE:v1 has neither a referrers entry nor a $fallback_tag fallback"
+    echo "       tag, so Kyverno would find no bundle and fall back to the legacy .sig"
+    echo "       path — measuring the wrong format under a bundle label."
+    exit 1
+  fi
+  echo "referrer check OK: $REPO_BUNDLE:v1 carries its signature as an OCI referrer"
 fi
 
 echo "==> verifying the signature exists and verifies"
@@ -641,5 +833,12 @@ echo "  code CA:      $KEY_DIR/codesign-ca.crt  (trusted root for the cert-chain
 echo "  wrong CA:     $KEY_DIR/codesign-ca-wrong.crt  (signs wrong-ca-control only)"
 echo "  in-cluster:   $IN_CLUSTER_HOST/${REPO_ALL:-bench/signed-all}:v{1..$IMAGE_COUNT}  (signed by keys A, B, C)"
 fi
+if [[ "$BUNDLE_SETS" == "1" ]]; then
+echo "  in-cluster:   $IN_CLUSTER_HOST/$REPO_BUNDLE:v{1..$IMAGE_COUNT}  (OCI 1.1 bundle, key A)"
+echo "  in-cluster:   $IN_CLUSTER_HOST/$REPO_BUNDLE_B:v{1..$IMAGE_COUNT}  (OCI 1.1 bundle, key B)"
+echo "  bundle keys:  the same key A and key B above - bundle sets are key-signed,"
+echo "                because a certificate attestor cannot verify a bundle offline"
+fi
+echo "  backend:      $REGISTRY_FLAVOR ($REGISTRY_IMAGE)"
 echo "  CA bundle:    $KEY_DIR/ca-bundle.pem  (for admissionController.caCertificates.data)"
 echo "  delay:        ${DELAY_MS}ms  (change: ACTION=delay DELAY_MS=25 bash $0)"
