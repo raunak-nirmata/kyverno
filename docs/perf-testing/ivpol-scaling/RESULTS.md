@@ -64,11 +64,12 @@ replica than 1.18 while doing three times the work, so read it against the
 throughput chart rather than on its own.
 
 **On the cache row.** No hit-rate percentage is quoted, because it would say more
-about the workload than the engine. This benchmark admits one of four images
-repeatedly, so after the first verification of each, everything hits: main logged
-3,820 hits against 3,824 checks, and the 4 misses are exactly the 4 distinct
-images. Any working cache scores ~99.9% on that shape, and a workload with
-thousands of distinct images would score far lower. What separates the versions
+about the workload than the engine. This benchmark admits a single image
+repeatedly, so after the first verification everything hits: main logged 3,820
+hits against 3,824 checks, and the handful of misses are that first touch plus
+the unsigned control, which fails verification and so never populates the cache.
+Any working cache scores ~99.9% on that shape, and a workload with thousands of
+distinct images would score far lower. What separates the versions
 is the registry traffic that survives the cache — 14, 10, and 3 calls per
 admission.
 
