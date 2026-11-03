@@ -1,0 +1,94 @@
+# Key-based cosign ImageValidatingPolicy, Kyverno 1.18 variant.
+#
+# KYVERNO 1.18 VARIANT. Identical to ivpol-cosign-key.yaml in every way that is
+# measured - same key, same images, same shape - and different only in the
+# ctlog block, because 1.18 refuses the policy the other versions accept.
+#
+# Why this file has to exist. On 1.18, checkOptions calls getRekor()
+# unconditionally; there is no fast path that skips Sigstore for a key-based
+# attestor. getRekor() then enforces three things whenever a ctlog block is
+# present at all:
+#
+#   - url must be non-empty, or it returns "rekor URL must be provided"
+#   - rekorPubKey empty  -> cosign.GetRekorPubs() -> network to Sigstore
+#   - ctLogPubKey empty  -> cosign.GetCTLogPubs() -> network to Sigstore
+#
+# So on 1.18 a policy that says "ignore the transparency log" is still required
+# to name one, and still reaches for Sigstore's keys unless they are inlined.
+# Leaving them out made a correctly signed image fail verification outright,
+# which the positive control caught before any number was recorded.
+#
+# 1.19 added skipSigstoreInfra (keyOrCert && ignoreTlog) and calls getRekor()
+# only when that is false, so the same policy verifies with no Sigstore contact
+# at all. That difference is itself a finding: 1.18 cannot do fully offline
+# key-based verification, 1.19 can.
+#
+# The values below are deliberately inert. The URL is never dialled because
+# IgnoreTlog is true; the two public keys exist only so the code takes its
+# local-parse branch instead of its network branch. They are the benchmark's
+# own cosign public key, reused because any well-formed PEM satisfies the
+# parser and nothing here ever verifies against them.
+apiVersion: policies.kyverno.io/v1beta1
+kind: ImageValidatingPolicy
+metadata:
+  name: ivpol-bench-cosign-key-118
+spec:
+  webhookConfiguration:
+    timeoutSeconds: 30
+  failurePolicy: Fail
+  validationActions:
+    - Deny
+  evaluation:
+    mode: Kubernetes
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  matchImageReferences:
+    - glob: "registry.bench-registry.svc.cluster.local:5000/bench/signed:*"
+  validationConfigurations:
+    # Digest mutation and digest verification stay off: each would add work
+    # that is not signature verification, and the sweep measures the per-image
+    # fetch-and-verify path, not digest rewriting.
+    #
+    # required is ON, and that is a measurement decision rather than a policy
+    # preference. With it off, Kyverno 1.18.2 silently skipped verification for
+    # about 15% of admissions - measured, same cell, same rig: 161 of 189
+    # images verified at required:false, 116 of 116 at required:true, with no
+    # denials either way. 1.19.1 verified 100% regardless. An admission that
+    # skipped verification still completes, and completes faster, so leaving
+    # this off biases exactly the number the benchmark exists to report.
+    mutateDigest: false
+    verifyDigest: false
+    required: true
+  attestors:
+    - name: cosign
+      cosign:
+        key:
+          data: |
+PUBLIC_KEY_PLACEHOLDER
+        # The benchmark images are signed offline against a local key: there is
+        # no Rekor entry for them, because putting a public transparency log on
+        # the admission path would add latency nobody here controls to every
+        # measured request. Without this, Kyverno finds the signature and then
+        # fails it with "offline verification failed" while trying to confirm a
+        # log entry that was never made.
+        ctlog:
+          # Required by 1.18 even though the log is ignored - see the header.
+          url: https://rekor.invalid
+          rekorPubKey: |
+REKOR_PUBKEY_PLACEHOLDER
+          ctLogPubKey: |
+CTLOG_PUBKEY_PLACEHOLDER
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+  validations:
+    # Every matched image must carry a valid signature from the benchmark key.
+    # Written as an explicit count comparison rather than a boolean so a partial
+    # verification - some images verified, some not - fails loudly instead of
+    # passing on the first success.
+    - expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.cosign])).all(count, count > 0)
+      message: "every container image must carry a valid benchmark cosign signature"

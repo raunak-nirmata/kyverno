@@ -1,0 +1,69 @@
+# Mixed trust roots on the BUNDLE format — the key-based cache-defeat finding,
+# re-run on the format the talk's audience actually deploys.
+#
+# The key-based pair (ivpol-cosign-key-{combined,split}.yaml) measured a 4.8x
+# gap between these two expressions, caused by the engine caching a boolean
+# meaning "every attestor verified" (impl.go:202) while the policy passes on
+# count > 0 (impl.go:205). Nothing in that condition inspects the attestor type
+# or the signature format, so the defeat should reproduce here unchanged. It is
+# worth measuring rather than asserting, because the bundle path's per-attestor
+# cost is a referrers walk rather than a .sig tag fetch, so the size of the gap
+# can differ even when its cause does not.
+#
+# Roots A and B are two independent cosign keys. A certificate attestor cannot
+# verify a bundle offline at all (see ivpol-cosign-bundle-key.yaml for why), so
+# the two roots here are keys. Images in bench/signed-bundle carry a bundle
+# from key A only, so under the combined expression count is 1 while
+# len(attestors) is 2 — the uncacheable case.
+#
+# This is the split form: one attestor per call, OR'd. CEL short-circuits ||,
+# so an image matching the first-listed root never evaluates the second.
+apiVersion: policies.kyverno.io/v1beta1
+kind: ImageValidatingPolicy
+metadata:
+  name: ivpol-bench-cosign-bundle-tworoot-split
+spec:
+  webhookConfiguration:
+    timeoutSeconds: 30
+  failurePolicy: Fail
+  validationActions:
+    - Deny
+  evaluation:
+    mode: Kubernetes
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  matchImageReferences:
+    - glob: "registry.bench-registry.svc.cluster.local:5000/bench/signed-bundle:*"
+    - glob: "registry.bench-registry.svc.cluster.local:5000/bench/signed-bundle-b:*"
+  validationConfigurations:
+    mutateDigest: false
+    verifyDigest: false
+    required: true
+  attestors:
+    - name: a
+      cosign:
+        key:
+          data: |
+KEY_A_PLACEHOLDER
+        ctlog:
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+    - name: b
+      cosign:
+        key:
+          data: |
+KEY_B_PLACEHOLDER
+        ctlog:
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+  validations:
+    - expression: >-
+        images.containers.map(image,
+          verifyImageSignatures(image, [attestors.a]) > 0 ||
+          verifyImageSignatures(image, [attestors.b]) > 0
+        ).all(ok, ok)
+      message: "every container image must carry a valid bundle signature from trust root a or b"
